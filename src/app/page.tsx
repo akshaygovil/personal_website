@@ -10,7 +10,6 @@ export default function ComingSoon() {
   return (
     <main>
       <h1>Coming Soon</h1>
-      <p>Awesome things to come. Stay tuned.</p>
       <a href="/demo">Sample automation</a>
     </main>
   );
