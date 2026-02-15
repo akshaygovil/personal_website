@@ -18,7 +18,11 @@ type FormState = {
   company: string; // honeypot
 };
 
-type Status = "idle" | "loading" | "success" | "error";
+type Status =
+  | { type: "idle" }
+  | { type: "loading" }
+  | { type: "success" }
+  | { type: "error"; message: string };
 
 /* -------------------------
    Initial State
@@ -39,7 +43,7 @@ const INITIAL_FORM: FormState = {
 -------------------------- */
 export default function ContactForm() {
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
-  const [status, setStatus] = useState<Status>("idle");
+  const [status, setStatus] = useState<Status>({ type: "idle" });
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -47,13 +51,13 @@ export default function ContactForm() {
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (status === "loading") return;
+    if (status.type === "loading") return;
 
-    setStatus("loading");
+    setStatus({ type: "loading" });
 
-    // Honeypot (silent success)
+    // Honeypot (silent success for bots)
     if (form.company) {
-      setStatus("success");
+      setStatus({ type: "success" });
       return;
     }
 
@@ -75,12 +79,22 @@ export default function ContactForm() {
         }
       );
 
-      if (!res.ok) throw new Error("Request failed");
+      if (!res.ok) {
+        throw new Error("Request failed. Please try again.");
+      }
 
-      setStatus("success");
+      setStatus({ type: "success" });
       setForm(INITIAL_FORM);
-    } catch {
-      setStatus("error");
+    } catch (e) {
+      console.error("Contact form error:", e);
+
+      setStatus({
+        type: "error",
+        message:
+          e instanceof Error
+            ? e.message
+            : "Something went wrong. Please try again.",
+      });
     }
   }
 
@@ -89,7 +103,7 @@ export default function ContactForm() {
       <div
         className="container"
         style={{
-          minHeight: "calc(100svh - 96px)", // adjust if nav height differs
+          minHeight: "calc(100svh - 96px)",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -100,15 +114,13 @@ export default function ContactForm() {
           style={{
             width: "100%",
             maxWidth: 520,
-            transform: "translateY(-8px)", // optical centering
+            transform: "translateY(-8px)",
           }}
         >
           {/* Header */}
           <div className="blockStack" style={{ textAlign: "center" }}>
             <span className="sectionLabel">Get in touch</span>
-
             <h2 className="h2">Let’s start a conversation</h2>
-
             <p className="p-lg">
               Share a few details and we’ll get back to you shortly.
             </p>
@@ -202,13 +214,13 @@ export default function ContactForm() {
             <button
               type="submit"
               className="btn btnPrimary"
-              disabled={status === "loading"}
+              disabled={status.type === "loading"}
             >
-              {status === "loading" ? "Sending…" : "Send message"}
+              {status.type === "loading" ? "Sending…" : "Send message"}
             </button>
 
             {/* Feedback */}
-            {status === "success" && (
+            {status.type === "success" && (
               <p
                 className="p"
                 style={{ color: "var(--success)", textAlign: "center" }}
@@ -217,12 +229,12 @@ export default function ContactForm() {
               </p>
             )}
 
-            {status === "error" && (
+            {status.type === "error" && (
               <p
                 className="p"
                 style={{ color: "var(--error)", textAlign: "center" }}
               >
-                Something went wrong. Please try again.
+                {status.message}
               </p>
             )}
           </form>
