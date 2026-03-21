@@ -2,6 +2,7 @@
 
 import {
     CSSProperties,
+    ChangeEvent,
     FormEvent,
     ReactNode,
     useCallback,
@@ -157,6 +158,91 @@ function parseMoney(input: string): number {
     if (!cleaned) return 0;
     const parsed = Number(cleaned);
     return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Live AUD-style display while typing: $1 234 567 or $1 234.56
+ * (parseMoney still works — it strips non-numeric chars except one ".")
+ */
+function formatMoneyInputDisplay(raw: string): string {
+    const s = normalizeNumericInput(raw.replace(/[^\d.]/g, ""));
+    if (!s) return "";
+
+    const dotIdx = s.indexOf(".");
+    const hasDot = dotIdx !== -1;
+    const intStr = hasDot ? s.slice(0, dotIdx) : s;
+    const fracStr = hasDot
+        ? s.slice(dotIdx + 1).replace(/\D/g, "").slice(0, 2)
+        : "";
+
+    const intDigits = intStr.replace(/\D/g, "");
+    if (!intDigits && !hasDot) return "";
+
+    const intGrouped =
+        intDigits === ""
+            ? "0"
+            : intDigits.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+
+    if (!hasDot) {
+        return `$${intGrouped}`;
+    }
+
+    // Preserve "123." while user is typing the decimal part
+    const afterDot = s.slice(dotIdx + 1);
+    const trailingDotOnly =
+        fracStr === "" && afterDot === "" && s.endsWith(".");
+
+    if (trailingDotOnly) {
+        return `$${intGrouped}.`;
+    }
+    return `$${intGrouped}.${fracStr}`;
+}
+
+function countDigitsBeforeCursor(value: string, cursor: number): number {
+    let n = 0;
+    const end = Math.min(cursor, value.length);
+    for (let i = 0; i < end; i++) {
+        if (/\d/.test(value[i])) n += 1;
+    }
+    return n;
+}
+
+function caretIndexAfterFormat(formatted: string, digitsBefore: number): number {
+    if (digitsBefore <= 0) {
+        return formatted.startsWith("$") ? 1 : 0;
+    }
+    let seen = 0;
+    for (let i = 0; i < formatted.length; i++) {
+        if (/\d/.test(formatted[i])) {
+            seen += 1;
+            if (seen >= digitsBefore) {
+                return i + 1;
+            }
+        }
+    }
+    return formatted.length;
+}
+
+function applyMoneyInputChange(
+    e: ChangeEvent<HTMLInputElement>,
+    setFormatted: (value: string) => void
+): void {
+    const el = e.target;
+    const raw = el.value;
+    const start = el.selectionStart ?? raw.length;
+    const digitsBefore = countDigitsBeforeCursor(raw, start);
+
+    const formatted = formatMoneyInputDisplay(raw);
+    setFormatted(formatted);
+
+    queueMicrotask(() => {
+        const pos = caretIndexAfterFormat(formatted, digitsBefore);
+        try {
+            el.setSelectionRange(pos, pos);
+        } catch {
+            /* ignore */
+        }
+    });
 }
 
 function parseDigits(input: string): string {
@@ -883,8 +969,20 @@ export default function MortgageLeadMagnetPage() {
             );
 
             setGoal(restoredGoal);
-            setPurchase(restoredPurchase);
-            setRefi(restoredRefi);
+            setPurchase({
+                ...restoredPurchase,
+                propertyPrice: formatMoneyInputDisplay(restoredPurchase.propertyPrice),
+                deposit: formatMoneyInputDisplay(restoredPurchase.deposit),
+                annualIncome: formatMoneyInputDisplay(restoredPurchase.annualIncome),
+                secondIncome: formatMoneyInputDisplay(restoredPurchase.secondIncome),
+                monthlyDebts: formatMoneyInputDisplay(restoredPurchase.monthlyDebts),
+            });
+            setRefi({
+                ...restoredRefi,
+                loanBalance: formatMoneyInputDisplay(restoredRefi.loanBalance),
+                propertyValue: formatMoneyInputDisplay(restoredRefi.propertyValue),
+                currentRepayment: formatMoneyInputDisplay(restoredRefi.currentRepayment),
+            });
 
             if (parsed.step && parsed.step >= 1) {
                 setStep(Math.min(parsed.step, maxRestorableStep));
@@ -1019,6 +1117,7 @@ export default function MortgageLeadMagnetPage() {
 
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
+
         if (submitStatus.type === "loading") return;
         if (!validateStep4()) return;
 
@@ -1050,8 +1149,10 @@ export default function MortgageLeadMagnetPage() {
                     phone: sanitizePhone(lead.phone),
                 },
                 metadata: {
-                    pagePath: typeof window !== "undefined" ? window.location.pathname : "",
-                    userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
+                    pagePath:
+                        typeof window !== "undefined" ? window.location.pathname : "",
+                    userAgent:
+                        typeof navigator !== "undefined" ? navigator.userAgent : "",
                     submittedAtClient: new Date().toISOString(),
                     turnstileToken: turnstileToken || null,
                 },
@@ -1067,13 +1168,31 @@ export default function MortgageLeadMagnetPage() {
                 body: JSON.stringify(payload),
             });
 
-            const maybeJson = await res.json().catch(() => null);
+            const rawText = await res.text();
+            let maybeJson: any = null;
+
+            try {
+                maybeJson = rawText ? JSON.parse(rawText) : null;
+            } catch {
+                maybeJson = null;
+            }
 
             if (!res.ok) {
+                const debugMessage =
+                    maybeJson?.message ||
+                    maybeJson?.error ||
+                    rawText ||
+                    `Request failed with status ${res.status}`;
+
                 throw new Error(
-                    maybeJson?.message || "We couldn’t send your details right now. Please try again."
+                    `[DEBUG] status=${res.status} statusText=${res.statusText} message=${debugMessage}`
                 );
             }
+
+            console.log("[DEBUG] submit success:", {
+                status: res.status,
+                response: maybeJson ?? rawText,
+            });
 
             setSubmitStatus({ type: "success" });
             setLead(DEFAULT_LEAD);
@@ -1083,6 +1202,8 @@ export default function MortgageLeadMagnetPage() {
             track("mortgage_lead_submitted", { goal });
             nextStep();
         } catch (err) {
+            console.error("[DEBUG] handleSubmit error:", err);
+
             setSubmitStatus({
                 type: "error",
                 message:
@@ -1399,14 +1520,16 @@ export default function MortgageLeadMagnetPage() {
                                                 id="propertyPrice"
                                                 inputMode="decimal"
                                                 autoComplete="off"
-                                                placeholder="e.g. 850000"
+                                                placeholder="e.g. $850 000"
                                                 value={purchase.propertyPrice}
                                                 onChange={(e) => {
                                                     clearFieldError("propertyPrice");
-                                                    setPurchase((p) => ({
-                                                        ...p,
-                                                        propertyPrice: e.target.value,
-                                                    }));
+                                                    applyMoneyInputChange(e, (v) =>
+                                                        setPurchase((p) => ({
+                                                            ...p,
+                                                            propertyPrice: v,
+                                                        }))
+                                                    );
                                                 }}
                                                 style={inputStyle}
                                                 aria-invalid={Boolean(errors.propertyPrice)}
@@ -1427,14 +1550,16 @@ export default function MortgageLeadMagnetPage() {
                                                 id="deposit"
                                                 inputMode="decimal"
                                                 autoComplete="off"
-                                                placeholder="e.g. 130000"
+                                                placeholder="e.g. $130 000"
                                                 value={purchase.deposit}
                                                 onChange={(e) => {
                                                     clearFieldError("deposit");
-                                                    setPurchase((p) => ({
-                                                        ...p,
-                                                        deposit: e.target.value,
-                                                    }));
+                                                    applyMoneyInputChange(e, (v) =>
+                                                        setPurchase((p) => ({
+                                                            ...p,
+                                                            deposit: v,
+                                                        }))
+                                                    );
                                                 }}
                                                 style={inputStyle}
                                                 aria-invalid={Boolean(errors.deposit)}
@@ -1453,14 +1578,16 @@ export default function MortgageLeadMagnetPage() {
                                                 id="annualIncome"
                                                 inputMode="decimal"
                                                 autoComplete="off"
-                                                placeholder="e.g. 120000"
+                                                placeholder="e.g. $120 000"
                                                 value={purchase.annualIncome}
                                                 onChange={(e) => {
                                                     clearFieldError("annualIncome");
-                                                    setPurchase((p) => ({
-                                                        ...p,
-                                                        annualIncome: e.target.value,
-                                                    }));
+                                                    applyMoneyInputChange(e, (v) =>
+                                                        setPurchase((p) => ({
+                                                            ...p,
+                                                            annualIncome: v,
+                                                        }))
+                                                    );
                                                 }}
                                                 style={inputStyle}
                                                 aria-invalid={Boolean(errors.annualIncome)}
@@ -1485,10 +1612,12 @@ export default function MortgageLeadMagnetPage() {
                                                 value={purchase.secondIncome}
                                                 onChange={(e) => {
                                                     clearFieldError("secondIncome");
-                                                    setPurchase((p) => ({
-                                                        ...p,
-                                                        secondIncome: e.target.value,
-                                                    }));
+                                                    applyMoneyInputChange(e, (v) =>
+                                                        setPurchase((p) => ({
+                                                            ...p,
+                                                            secondIncome: v,
+                                                        }))
+                                                    );
                                                 }}
                                                 style={inputStyle}
                                                 aria-invalid={Boolean(errors.secondIncome)}
@@ -1514,14 +1643,16 @@ export default function MortgageLeadMagnetPage() {
                                                 id="monthlyDebts"
                                                 inputMode="decimal"
                                                 autoComplete="off"
-                                                placeholder="e.g. 800"
+                                                placeholder="e.g. $800"
                                                 value={purchase.monthlyDebts}
                                                 onChange={(e) => {
                                                     clearFieldError("monthlyDebts");
-                                                    setPurchase((p) => ({
-                                                        ...p,
-                                                        monthlyDebts: e.target.value,
-                                                    }));
+                                                    applyMoneyInputChange(e, (v) =>
+                                                        setPurchase((p) => ({
+                                                            ...p,
+                                                            monthlyDebts: v,
+                                                        }))
+                                                    );
                                                 }}
                                                 style={inputStyle}
                                                 aria-invalid={Boolean(errors.monthlyDebts)}
@@ -1641,14 +1772,16 @@ export default function MortgageLeadMagnetPage() {
                                                 id="loanBalance"
                                                 inputMode="decimal"
                                                 autoComplete="off"
-                                                placeholder="e.g. 540000"
+                                                placeholder="e.g. $540 000"
                                                 value={refi.loanBalance}
                                                 onChange={(e) => {
                                                     clearFieldError("loanBalance");
-                                                    setRefi((r) => ({
-                                                        ...r,
-                                                        loanBalance: e.target.value,
-                                                    }));
+                                                    applyMoneyInputChange(e, (v) =>
+                                                        setRefi((r) => ({
+                                                            ...r,
+                                                            loanBalance: v,
+                                                        }))
+                                                    );
                                                 }}
                                                 style={inputStyle}
                                                 aria-invalid={Boolean(errors.loanBalance)}
@@ -1727,14 +1860,16 @@ export default function MortgageLeadMagnetPage() {
                                                 id="propertyValue"
                                                 inputMode="decimal"
                                                 autoComplete="off"
-                                                placeholder="e.g. 820000"
+                                                placeholder="e.g. $820 000"
                                                 value={refi.propertyValue}
                                                 onChange={(e) => {
                                                     clearFieldError("propertyValue");
-                                                    setRefi((r) => ({
-                                                        ...r,
-                                                        propertyValue: e.target.value,
-                                                    }));
+                                                    applyMoneyInputChange(e, (v) =>
+                                                        setRefi((r) => ({
+                                                            ...r,
+                                                            propertyValue: v,
+                                                        }))
+                                                    );
                                                 }}
                                                 style={inputStyle}
                                                 aria-invalid={Boolean(errors.propertyValue)}
@@ -1761,10 +1896,12 @@ export default function MortgageLeadMagnetPage() {
                                                 value={refi.currentRepayment}
                                                 onChange={(e) => {
                                                     clearFieldError("currentRepayment");
-                                                    setRefi((r) => ({
-                                                        ...r,
-                                                        currentRepayment: e.target.value,
-                                                    }));
+                                                    applyMoneyInputChange(e, (v) =>
+                                                        setRefi((r) => ({
+                                                            ...r,
+                                                            currentRepayment: v,
+                                                        }))
+                                                    );
                                                 }}
                                                 style={inputStyle}
                                                 aria-invalid={Boolean(errors.currentRepayment)}
