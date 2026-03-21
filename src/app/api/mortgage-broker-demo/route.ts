@@ -134,13 +134,28 @@ function getClientIp(request: NextRequest): string {
 }
 
 function enforceOrigin(request: NextRequest): boolean {
-    const allowedOrigin = process.env.APP_BASE_URL?.replace(/\/$/, "");
-    if (!allowedOrigin) return true;
-
     const origin = request.headers.get("origin")?.replace(/\/$/, "");
     if (!origin) return true;
 
-    return origin === allowedOrigin;
+    const allowedOrigins = new Set(
+        [
+            process.env.APP_BASE_URL,
+            "https://akshaygovil.com",
+            "https://www.akshaygovil.com",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null,
+        ]
+            .filter(Boolean)
+            .map((value) => String(value).replace(/\/$/, ""))
+    );
+
+    console.log("origin debug", {
+        origin,
+        allowedOrigins: Array.from(allowedOrigins),
+    });
+
+    return allowedOrigins.has(origin);
 }
 
 function rateLimit(key: string): boolean {
