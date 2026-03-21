@@ -1,6 +1,5 @@
 "use client";
 
-import { getTheme } from "../lib/useTheme";
 import { ThemeToggle } from "./themeToggle";
 import { useState, useEffect } from "react";
 
@@ -23,7 +22,6 @@ export function Hero({
 }: HeroProps) {
   const [isScrolled, setIsScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const theme = getTheme();
 
   useEffect(() => {
     const handleScroll = () => {
