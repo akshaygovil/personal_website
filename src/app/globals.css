@@ -38,11 +38,9 @@ body::before {
   transform: translateX(-50%);
   width: 120%;
   height: 80%;
-  background: radial-gradient(
-    ellipse 80% 50% at 50% 0%,
-    var(--accent-glow) 0%,
-    transparent 55%
-  );
+  background: radial-gradient(ellipse 80% 50% at 50% 0%,
+      var(--accent-glow) 0%,
+      transparent 55%);
   pointer-events: none;
   z-index: 0;
 }
@@ -54,11 +52,9 @@ body::after {
   right: -10%;
   width: 60%;
   height: 60%;
-  background: radial-gradient(
-    circle at 70% 80%,
-    var(--accent-glow) 0%,
-    transparent 45%
-  );
+  background: radial-gradient(circle at 70% 80%,
+      var(--accent-glow) 0%,
+      transparent 45%);
   pointer-events: none;
   z-index: 0;
 }
@@ -97,30 +93,30 @@ a {
   --muted: #94a3b8;
   --border: #e2e8f0;
   --border-light: #f1f5f9;
-  
+
   /* Accent colors */
   --accent: #3b82f6;
   --accent-hover: #2563eb;
   --accent-glow: rgba(59, 130, 246, 0.15);
-  
+
   /* Semantic colors */
   --success: #10b981;
   --error: #ef4444;
   --warning: #f59e0b;
-  
+
   /* Shadows */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
   --shadow-md: 0 10px 15px rgba(0, 0, 0, 0.1);
   --shadow-lg: 0 20px 25px rgba(0, 0, 0, 0.1);
   --shadow-xl: 0 25px 50px rgba(0, 0, 0, 0.15);
-  
+
   /* Spacing */
   --radius: 12px;
   --radius-sm: 8px;
   --radius-lg: 16px;
   --radius-xl: 20px;
-  
+
   /* Content width & section rhythm (same for all sections) */
   --content-max-width: 1160px;
   --section-padding-y: 18px;
@@ -128,13 +124,13 @@ a {
   --block-gap: 6px;
   --block-gap-lg: 10px;
   --block-gap-xl: 14px;
-  
+
   /* Glows / halos */
   --glow-soft: 0 0 60px rgba(59, 130, 246, 0.08);
   --glow-card: 0 0 40px rgba(59, 130, 246, 0.06);
   --glow-card-hover: 0 0 56px rgba(59, 130, 246, 0.12);
   --glow-accent-ring: 0 0 0 1px rgba(59, 130, 246, 0.1);
-  
+
   /* Transitions */
   --transition: 150ms ease;
   --transition-slow: 300ms ease;
@@ -154,21 +150,21 @@ a {
   --muted: #64748b;
   --border: #2d3748;
   --border-light: #1f2937;
-  
+
   --accent: #60a5fa;
   --accent-hover: #3b82f6;
   --accent-glow: rgba(96, 165, 250, 0.2);
-  
+
   --success: #34d399;
   --error: #f87171;
   --warning: #fbbf24;
-  
+
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow: 0 4px 6px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 10px 15px rgba(0, 0, 0, 0.5);
   --shadow-lg: 0 20px 25px rgba(0, 0, 0, 0.6);
   --shadow-xl: 0 25px 50px rgba(0, 0, 0, 0.7);
-  
+
   --glow-soft: 0 0 80px rgba(96, 165, 250, 0.12);
   --glow-card: 0 0 50px rgba(96, 165, 250, 0.1);
   --glow-card-hover: 0 0 70px rgba(96, 165, 250, 0.18);
@@ -256,9 +252,17 @@ a {
 }
 
 /* Standard spacing between major blocks inside a section/card */
-.blockGap { margin-top: var(--block-gap); }
-.blockGapLg { margin-top: var(--block-gap-lg); }
-.blockGapXl { margin-top: var(--block-gap-xl); }
+.blockGap {
+  margin-top: var(--block-gap);
+}
+
+.blockGapLg {
+  margin-top: var(--block-gap-lg);
+}
+
+.blockGapXl {
+  margin-top: var(--block-gap-xl);
+}
 
 /* Ensure content sits above fixed glow layers */
 #content {
@@ -601,6 +605,11 @@ textarea.input {
   margin: 0 0 var(--block-gap) 0;
 }
 
+.sectionLabelCentered {
+  display: block;
+  text-align: center;
+}
+
 /* Section halo: soft glow behind section content */
 .sectionHalo {
   position: relative;
@@ -615,11 +624,9 @@ textarea.input {
   width: 100%;
   max-width: 900px;
   height: 120%;
-  background: radial-gradient(
-    ellipse 70% 60% at 50% 50%,
-    var(--accent-glow) 0%,
-    transparent 60%
-  );
+  background: radial-gradient(ellipse 70% 60% at 50% 50%,
+      var(--accent-glow) 0%,
+      transparent 60%);
   pointer-events: none;
   z-index: -1;
 }
@@ -883,87 +890,421 @@ textarea.input {
   border-width: 0;
 }
 
+/* =========================
+   Mortgage Broker Demo
+========================= */
+/* =========================
+   Mortgage Broker Demo
+========================= */
 
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
 
-
-
-
-
-
-
-
-
-
-/* ---------- Grid ---------- */
-.galleryGrid {
-  display: grid;
-  grid-template-columns: repeat(12, 1fr);
-  gap: clamp(16px, 3vw, 32px);
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-.galleryItem {
-  cursor: zoom-in;
+.ml-enter {
+  animation: fadeUp 0.42s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
-.galleryItemImgWrap {
-  position: relative;
+.mortgageShell {
+  min-height: calc(100svh - 60px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 0;
+}
+
+@media (max-width: 600px) {
+  .mortgageShell {
+    padding: 24px 0;
+    min-height: auto;
+  }
+}
+
+.mortgageCard {
   width: 100%;
-  overflow: hidden;
-  border-radius: var(--radius);
+  max-width: 880px;
+  margin: 0 auto;
 }
 
-.galleryItemImg {
-  object-fit: cover;
-  transition: transform 0.4s ease;
+.blockStack--flush {
+  gap: 0;
 }
 
-.galleryItem:hover .galleryItemImg {
-  transform: scale(1.03);
+.mortgageInnerCard {
+  margin-top: 18px;
+  margin-bottom: 18px;
 }
 
-/* ---------- Lightbox ---------- */
-.lightbox {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.85);
+.fieldPrompt {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.goalGrid {
   display: grid;
-  place-items: center;
-  z-index: 1000;
-  cursor: zoom-out;
+  gap: 10px;
+  margin-bottom: 28px;
 }
 
-.lightboxInner {
-  position: relative;
-  width: min(92vw, 1400px);
-  height: min(92vh, 90svh);
-}
-
-.lightboxImg {
-  object-fit: contain;
-}
-
-.lightboxCaption {
-  margin-top: 16px;
-  text-align: center;
-  color: white;
-  opacity: 0.85;
-  font-size: 14px;
-}
-
-.lightboxClose {
-  position: absolute;
-  top: 12px;
-  right: 16px;
-  background: none;
-  border: none;
-  font-size: 32px;
-  line-height: 1;
-  color: white;
+.goal-opt {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 58px;
+  padding: 15px 18px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
   cursor: pointer;
-  opacity: 0.85;
-  z-index: 2;
+  text-align: left;
+  transition: all var(--transition-slow);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text);
 }
 
-.lightboxClose:hover {
-  opacity: 1;
+.goal-opt:hover {
+  border-color: var(--accent);
+  background: var(--bg-secondary);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow), var(--glow-card-hover);
+}
+
+.goal-opt.sel {
+  border-color: var(--accent);
+  background: var(--bg-secondary);
+  box-shadow: var(--shadow), var(--glow-card), var(--glow-accent-ring);
+}
+
+.goal-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+.goal-check {
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: #fff;
+  flex-shrink: 0;
+  transition: all var(--transition);
+}
+
+.goal-opt.sel .goal-check {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.stats-three {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+@media (max-width: 680px) {
+  .stats-three {
+    grid-template-columns: 1fr;
+  }
+}
+
+.stat-card {
+  min-height: 128px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 16px;
+  text-align: center;
+  box-shadow: var(--shadow), var(--glow-card), var(--glow-accent-ring);
+  transition: box-shadow var(--transition-slow), transform var(--transition-slow);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md), var(--glow-card-hover), var(--glow-accent-ring);
+}
+
+.stat-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+  line-height: 1.4;
+}
+
+.stat-value {
+  font-size: clamp(1.8rem, 3vw, 2.4rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--text);
+  line-height: 1.05;
+  word-break: break-word;
+}
+
+.stat-value.hi {
+  color: var(--accent);
+}
+
+.mortgagePositionText {
+  font-size: clamp(1.35rem, 2.4vw, 1.8rem) !important;
+}
+
+.mortgageCompareCopy {
+  margin-top: 14px;
+}
+
+.fl {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 14px;
+}
+
+.fl-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.fl-opt {
+  font-weight: 400;
+  font-size: 11px;
+  margin-left: 4px;
+  opacity: 0.65;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.two-up {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 560px) {
+  .two-up {
+    grid-template-columns: 1fr;
+  }
+}
+
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 8px 0 16px;
+}
+
+/* New locked report section — no absolute overlay */
+.lockedReport {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--surface) 86%, var(--bg-secondary) 14%) 0%,
+      color-mix(in srgb, var(--bg-secondary) 78%, var(--surface) 22%) 100%);
+  margin-bottom: 18px;
+  padding: 0;
+  box-shadow: var(--shadow), var(--glow-card), var(--glow-accent-ring);
+}
+
+.lockedReportChrome {
+  padding: 22px 22px 10px;
+  opacity: 0.75;
+  filter: blur(1.5px);
+  pointer-events: none;
+}
+
+.blur-line {
+  height: 12px;
+  background: var(--border);
+  border-radius: 999px;
+  margin-bottom: 12px;
+}
+
+.blur-line-1 {
+  width: 62%;
+}
+
+.blur-line-2 {
+  width: 88%;
+}
+
+.blur-line-3 {
+  width: 54%;
+}
+
+.blur-line-4 {
+  width: 76%;
+  margin-bottom: 0;
+}
+
+.lockedReportContent {
+  position: relative;
+  z-index: 1;
+  padding: 14px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  background:
+    linear-gradient(180deg,
+      rgba(255, 255, 255, 0.58) 0%,
+      rgba(255, 255, 255, 0.9) 36%,
+      rgba(255, 255, 255, 0.98) 100%);
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+[data-theme="dark"] .lockedReportContent {
+  background:
+    linear-gradient(180deg,
+      rgba(15, 17, 22, 0.72) 0%,
+      rgba(15, 17, 22, 0.88) 36%,
+      rgba(15, 17, 22, 0.96) 100%);
+}
+
+.lockedReportIcon {
+  font-size: 30px;
+  line-height: 1;
+}
+
+.lockedReportTitle {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.lockedReportCopy {
+  margin: 0;
+  max-width: 420px;
+  color: var(--text-2);
+}
+
+.lockedReportButton {
+  margin-top: 6px;
+  max-width: 320px;
+  min-height: 50px;
+}
+
+.check-circle {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--success) 30%, transparent);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  margin: 0 auto 24px;
+}
+
+.btn-full {
+  width: 100%;
+}
+
+.mt-8 {
+  margin-top: 8px;
+}
+
+.mt-10 {
+  margin-top: 10px;
+}
+
+.mb-10 {
+  margin-bottom: 10px;
+}
+
+.mb-12 {
+  margin-bottom: 12px;
+}
+
+.mb-14 {
+  margin-bottom: 14px;
+}
+
+.mb-24 {
+  margin-bottom: 24px;
+}
+
+.mb-28 {
+  margin-bottom: 28px;
+}
+
+.mortgageSuccess {
+  text-align: center;
+}
+
+.mortgageSuccessHighlight {
+  color: var(--text);
+}
+
+.mortgageSuccessCard {
+  text-align: left;
+  margin-bottom: 20px;
+}
+
+.bulletDot-success {
+  background: var(--success);
+}
+
+.mortgageMetaRow {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.mortgageMetaItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.formError {
+  color: var(--error);
+  text-align: center;
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.formFinePrint {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: 14px;
+  line-height: 1.6;
 }

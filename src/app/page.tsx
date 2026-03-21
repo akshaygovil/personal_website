@@ -6,27 +6,17 @@ import HighSchoolSection from "./components/HighSchoolSection";
 import { DailyWisdom } from "./components/DailyWisdom";
 import PhotographySection from "./components/PhotographySection";
 
-export default function ComingSoon() {
+export default function Page() {
   return (
-    <main>
-      <h1>Coming Soon</h1>
-      <a href="/demo">Sample automation</a>
+    <main id="content" style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+      <Hero />
+      <HighSchoolSection />
+      <DailyWisdom />
+      <AureusShowcase />
+      <PhotographySection />
+      <Contact />
+      <Footer />
     </main>
   );
 }
 
-/*
-export default function Page() {
-  return (
-    <main id="content" style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
-      <Hero/>
-      <HighSchoolSection/>
-      <DailyWisdom/>
-      <AureusShowcase/>
-      <PhotographySection/>
-      <Contact/>
-      <Footer/>
-    </main>
-  );
-}
-*/

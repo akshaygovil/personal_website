@@ -3,19 +3,17 @@
 import { useState } from "react";
 
 /* -------------------------
-   Types
+Types
 -------------------------- */
-type ContactTime = "morning" | "afternoon" | "evening" | "anytime";
 
 type FormState = {
-  firstName: string;
-  lastName: string;
-  email: string;
+  clientName: string;
   phone: string;
-  contactTime: ContactTime | "";
-  location: string;
-  message: string;
-  company: string; // honeypot
+  email: string;
+  propertyPrice: string;
+  deposit: string;
+  notes: string;
+  company: string;
 };
 
 type Status =
@@ -25,23 +23,24 @@ type Status =
   | { type: "error"; message: string };
 
 /* -------------------------
-   Initial State
+Initial State
 -------------------------- */
+
 const INITIAL_FORM: FormState = {
-  firstName: "",
-  lastName: "",
-  email: "",
+  clientName: "",
   phone: "",
-  contactTime: "",
-  location: "",
-  message: "",
+  email: "",
+  propertyPrice: "",
+  deposit: "",
+  notes: "",
   company: "",
 };
 
 /* -------------------------
-   Component
+Component
 -------------------------- */
-export default function ContactForm() {
+
+export default function ReferralPage() {
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   const [status, setStatus] = useState<Status>({ type: "idle" });
 
@@ -51,33 +50,33 @@ export default function ContactForm() {
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+
     if (status.type === "loading") return;
 
     setStatus({ type: "loading" });
 
-    // Honeypot (silent success for bots)
+    // Honeypot
     if (form.company) {
       setStatus({ type: "success" });
       return;
     }
 
     try {
-      const res = await fetch(
-        process.env.NEXT_PUBLIC_CONTACT_WEBHOOK_2 as string,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: `${form.firstName} ${form.lastName}`.trim(),
-            email: form.email.trim().toLowerCase(),
-            phone: form.phone.trim(),
-            location: form.location.trim(),
-            preferred_contact_time: form.contactTime,
-            message: form.message.trim(),
-            source: "general-contact-form",
-          }),
-        }
-      );
+      const res = await fetch(process.env.NEXT_PUBLIC_REFERRAL_WEBHOOK_REFFERAL_DEMO as string, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_name: form.clientName.trim(),
+          phone: form.phone.trim(),
+          email: form.email.trim().toLowerCase(),
+          property_price: form.propertyPrice.trim(),
+          deposit: form.deposit.trim(),
+          notes: form.notes.trim(),
+          source: "agent-referral-form",
+        }),
+      });
 
       if (!res.ok) {
         throw new Error("Request failed. Please try again.");
@@ -85,14 +84,14 @@ export default function ContactForm() {
 
       setStatus({ type: "success" });
       setForm(INITIAL_FORM);
-    } catch (e) {
-      console.error("Contact form error:", e);
+    } catch (error) {
+      console.error("Referral form error:", error);
 
       setStatus({
         type: "error",
         message:
-          e instanceof Error
-            ? e.message
+          error instanceof Error
+            ? error.message
             : "Something went wrong. Please try again.",
       });
     }
@@ -109,6 +108,18 @@ export default function ContactForm() {
           justifyContent: "center",
         }}
       >
+        <a
+          href="/referral"
+          style={{
+            position: "fixed",
+            top: 24,
+            left: 24,
+            fontSize: 14,
+            opacity: 0.7
+          }}
+        >
+          ← back
+        </a>
         <div
           className="featureCard"
           style={{
@@ -117,22 +128,21 @@ export default function ContactForm() {
             transform: "translateY(-8px)",
           }}
         >
-          {/* Header */}
           <div className="blockStack" style={{ textAlign: "center" }}>
-            <span className="sectionLabel">Get in touch</span>
-            <h2 className="h2">Let’s start a conversation</h2>
+            <span className="sectionLabel">Client Referral</span>
+            <h2 className="h2">Submit a client needing mortgage help</h2>
             <p className="p-lg">
-              Share a few details and we’ll get back to you shortly.
+              If your client needs help with financing or a home loan, submit
+              their details below and we will contact them immediately.
             </p>
           </div>
 
-          {/* Form */}
           <form
             onSubmit={handleSubmit}
             className="blockStack blockGapLg"
             style={{ marginTop: 28 }}
           >
-            {/* Honeypot */}
+            {/* Honeypot field */}
             <input
               type="text"
               className="sr-only"
@@ -142,25 +152,23 @@ export default function ContactForm() {
               onChange={(e) => update("company", e.target.value)}
             />
 
-            {/* Name */}
+            <input
+              required
+              className="input"
+              placeholder="Client name*"
+              value={form.clientName}
+              onChange={(e) => update("clientName", e.target.value)}
+            />
+
             <div className="featureGrid">
               <input
                 required
                 className="input"
-                placeholder="First name*"
-                value={form.firstName}
-                onChange={(e) => update("firstName", e.target.value)}
+                placeholder="Phone number*"
+                value={form.phone}
+                onChange={(e) => update("phone", e.target.value)}
               />
-              <input
-                className="input"
-                placeholder="Last name"
-                value={form.lastName}
-                onChange={(e) => update("lastName", e.target.value)}
-              />
-            </div>
 
-            {/* Contact */}
-            <div className="featureGrid">
               <input
                 required
                 type="email"
@@ -169,63 +177,45 @@ export default function ContactForm() {
                 value={form.email}
                 onChange={(e) => update("email", e.target.value)}
               />
+            </div>
+
+            <div className="featureGrid">
               <input
-                required
                 className="input"
-                placeholder="Phone number*"
-                value={form.phone}
-                onChange={(e) => update("phone", e.target.value)}
+                placeholder="Property price"
+                value={form.propertyPrice}
+                onChange={(e) => update("propertyPrice", e.target.value)}
+              />
+
+              <input
+                className="input"
+                placeholder="Deposit"
+                value={form.deposit}
+                onChange={(e) => update("deposit", e.target.value)}
               />
             </div>
 
-            {/* Location */}
-            <input
-              className="input"
-              placeholder="Location (city / country)"
-              value={form.location}
-              onChange={(e) => update("location", e.target.value)}
-            />
-
-            {/* Contact time */}
-            <select
-              required
-              className="input"
-              value={form.contactTime}
-              onChange={(e) =>
-                update("contactTime", e.target.value as ContactTime)
-              }
-            >
-              <option value="">Best time to contact*</option>
-              <option value="morning">Morning</option>
-              <option value="afternoon">Afternoon</option>
-              <option value="evening">Evening</option>
-              <option value="anytime">Anytime</option>
-            </select>
-
-            {/* Message */}
             <textarea
               className="input"
-              placeholder="Your message"
-              value={form.message}
-              onChange={(e) => update("message", e.target.value)}
+              placeholder="Notes"
+              value={form.notes}
+              onChange={(e) => update("notes", e.target.value)}
             />
 
-            {/* Submit */}
             <button
               type="submit"
               className="btn btnPrimary"
               disabled={status.type === "loading"}
             >
-              {status.type === "loading" ? "Sending…" : "Send message"}
+              {status.type === "loading" ? "Submitting…" : "Submit Referral"}
             </button>
 
-            {/* Feedback */}
             {status.type === "success" && (
               <p
                 className="p"
                 style={{ color: "var(--success)", textAlign: "center" }}
               >
-                Thanks — we’ll be in touch shortly.
+                Referral submitted — we'll be in touch with your client shortly.
               </p>
             )}
 
