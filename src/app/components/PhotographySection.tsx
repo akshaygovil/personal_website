@@ -3,6 +3,11 @@ import Image from "next/image";
 import { getPreviewPhotos } from "../lib/photography";
 
 export default function PhotographySection() {
+    return null;
+}
+
+/*
+export default function PhotographySection() {
   const previewPhotos = getPreviewPhotos();
 
   return (
@@ -46,3 +51,4 @@ export default function PhotographySection() {
     </section>
   );
 }
+*/

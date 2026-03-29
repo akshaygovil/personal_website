@@ -1,7 +1,6 @@
 "use client";
 
 import {
-    CSSProperties,
     ChangeEvent,
     FormEvent,
     ReactNode,
@@ -12,34 +11,58 @@ import {
     useState,
 } from "react";
 
-type Goal = "buy" | "invest" | "refinance";
+import styles from "./mortgage-lead.module.css";
+
+function cx(...parts: Array<string | false | undefined | null>) {
+    return parts.filter(Boolean).join(" ");
+}
+
+/** Four paths — first-home is separate from other owner-occupiers */
+type Goal = "buy_home" | "first_home" | "invest" | "refinance";
 
 type EmploymentType =
     | "full_time"
     | "part_time"
-    | "casual"
     | "self_employed"
-    | "contractor";
+    | "casual_contractor";
+
+type BuyTimeline = "asap" | "1_3" | "3_6" | "6plus";
+
+type RefinanceGoal =
+    | "lower_repayments"
+    | "better_rate"
+    | "access_equity"
+    | "consolidate_debt";
+
+type RefinanceTimeline = "asap" | "1_3" | "3plus";
 
 type PurchaseDetails = {
-    isFirstHomeBuyer: boolean | null;
     propertyPrice: string;
     deposit: string;
     annualIncome: string;
+    hasSecondApplicant: boolean | null;
     secondIncome: string;
     monthlyDebts: string;
-    postcode: string;
     employmentType: EmploymentType | "";
+    buyTimeline: BuyTimeline | "";
     listingUrl: string;
+    /** first_home only */
+    fhbStatus: "yes" | "unsure" | null;
+    /** invest only */
+    ownsProperty: boolean | null;
+    /** invest optional */
+    weeklyRent: string;
 };
 
 type RefinanceDetails = {
     loanBalance: string;
-    interestRate: string;
-    loanTermYears: string;
     propertyValue: string;
+    interestRate: string;
     currentRepayment: string;
-    postcode: string;
+    annualIncome: string;
+    monthlyDebts: string;
+    refinanceGoal: RefinanceGoal | "";
+    refinanceTimeline: RefinanceTimeline | "";
 };
 
 type LeadDetails = {
@@ -56,20 +79,20 @@ type SubmitStatus =
 
 type FieldErrors = Record<string, string>;
 
+type AffordabilityBand = "achievable" | "close" | "difficult";
+
 type PurchaseEstimate = {
     kind: "purchase";
     borrowingLow: number;
     borrowingHigh: number;
-    budgetLow: number;
-    budgetHigh: number;
+    repaymentMid: number;
     repaymentLow: number;
     repaymentHigh: number;
     propertyPrice: number;
     deposit: number;
-    position: "within" | "close" | "short";
+    affordability: AffordabilityBand;
     bestCaseShortfall: number;
-    bestCaseBuffer: number;
-    insightLines: string[];
+    teaserLine: string;
 };
 
 type RefinanceEstimate = {
@@ -80,11 +103,30 @@ type RefinanceEstimate = {
     savingsLow: number;
     savingsHigh: number;
     lvr: number | null;
-    position: "strong" | "possible" | "review";
-    insightLines: string[];
+    worthwhile: "likely" | "maybe" | "unclear";
+    remainingYears: number;
+    teaserLine: string;
 };
 
 type PreviewEstimate = PurchaseEstimate | RefinanceEstimate | null;
+
+type FullPurchaseResult = {
+    kind: "purchase";
+    headline: string;
+    strengths: string[];
+    watchouts: string[];
+    nextSteps: string[];
+};
+
+type FullRefinanceResult = {
+    kind: "refinance";
+    headline: string;
+    strengths: string[];
+    watchouts: string[];
+    nextSteps: string[];
+};
+
+type FullResult = FullPurchaseResult | FullRefinanceResult;
 
 declare global {
     interface Window {
@@ -108,29 +150,38 @@ declare global {
     }
 }
 
-const STORAGE_KEY = "mortgage-lead-ui-v3";
-const PREVIEW_VERSION = "frontend_preview_v3";
+const STORAGE_KEY = "mortgage-lead-ui-v4";
+const PREVIEW_VERSION = "frontend_preview_v4";
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || "";
+const BROKER_NAME =
+    process.env.NEXT_PUBLIC_MORTGAGE_BROKER_NAME || "the broker";
+const BOOKING_URL =
+    process.env.NEXT_PUBLIC_MORTGAGE_BROKER_BOOKING_URL || "#contact";
 
 const DEFAULT_PURCHASE: PurchaseDetails = {
-    isFirstHomeBuyer: null,
     propertyPrice: "",
     deposit: "",
     annualIncome: "",
+    hasSecondApplicant: null,
     secondIncome: "",
     monthlyDebts: "",
-    postcode: "",
     employmentType: "",
+    buyTimeline: "",
     listingUrl: "",
+    fhbStatus: null,
+    ownsProperty: null,
+    weeklyRent: "",
 };
 
 const DEFAULT_REFI: RefinanceDetails = {
     loanBalance: "",
-    interestRate: "",
-    loanTermYears: "",
     propertyValue: "",
+    interestRate: "",
     currentRepayment: "",
-    postcode: "",
+    annualIncome: "",
+    monthlyDebts: "",
+    refinanceGoal: "",
+    refinanceTimeline: "",
 };
 
 const DEFAULT_LEAD: LeadDetails = {
@@ -285,10 +336,6 @@ function isValidEmail(email: string): boolean {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
-function isValidPostcode(postcode: string): boolean {
-    return /^\d{4}$/.test(postcode.trim());
-}
-
 function isValidUrl(value: string): boolean {
     if (!value.trim()) return true;
     try {
@@ -320,26 +367,36 @@ function employmentFactor(type: EmploymentType | ""): number {
             return 1;
         case "part_time":
             return 0.94;
-        case "contractor":
-            return 0.92;
         case "self_employed":
             return 0.9;
-        case "casual":
-            return 0.88;
+        case "casual_contractor":
+            return 0.9;
         default:
             return 0.94;
     }
 }
 
-function computePurchaseEstimate(input: PurchaseDetails): PurchaseEstimate {
+/** Investment path: slightly more conservative serviceability assumption */
+const INVEST_INCOME_FACTOR = 0.93;
+
+function computePurchaseEstimate(
+    input: PurchaseDetails,
+    goal: "buy_home" | "first_home" | "invest"
+): PurchaseEstimate {
     const propertyPrice = parseMoney(input.propertyPrice);
     const deposit = parseMoney(input.deposit);
     const annualIncome = parseMoney(input.annualIncome);
-    const secondIncome = parseMoney(input.secondIncome);
+    const secondIncome = input.hasSecondApplicant
+        ? parseMoney(input.secondIncome)
+        : 0;
     const monthlyDebts = parseMoney(input.monthlyDebts);
-    const totalIncome = annualIncome + secondIncome;
+    const weeklyRent = parseMoney(input.weeklyRent);
+    const rentBoostAnnual = goal === "invest" && weeklyRent > 0 ? weeklyRent * 52 * 0.75 : 0;
 
-    const empFactor = employmentFactor(input.employmentType);
+    const totalIncome = annualIncome + secondIncome + rentBoostAnnual;
+
+    const empFactor =
+        goal === "invest" ? INVEST_INCOME_FACTOR : employmentFactor(input.employmentType);
     const annualDebtPenalty = monthlyDebts * 12 * 6;
 
     const rawLow = totalIncome * 3.7 * empFactor - annualDebtPenalty;
@@ -353,89 +410,71 @@ function computePurchaseEstimate(input: PurchaseDetails): PurchaseEstimate {
 
     const repaymentLow = calcMonthlyPayment(borrowingLow, 0.064, 30);
     const repaymentHigh = calcMonthlyPayment(borrowingHigh, 0.074, 30);
+    const repaymentMid = (repaymentLow + repaymentHigh) / 2;
 
-    let position: "within" | "close" | "short" = "short";
-    if (propertyPrice > 0 && budgetLow >= propertyPrice) position = "within";
-    else if (propertyPrice > 0 && budgetHigh >= propertyPrice) position = "close";
+    let affordability: AffordabilityBand = "difficult";
+    if (propertyPrice > 0 && budgetLow >= propertyPrice) affordability = "achievable";
+    else if (propertyPrice > 0 && budgetHigh >= propertyPrice) affordability = "close";
 
     const bestCaseShortfall =
         propertyPrice > 0 ? Math.max(propertyPrice - budgetHigh, 0) : 0;
-    const bestCaseBuffer =
-        propertyPrice > 0 ? Math.max(budgetLow - propertyPrice, 0) : 0;
 
-    const insightLines: string[] = [];
-
-    if (deposit > 0 && propertyPrice > 0) {
-        const depositPct = (deposit / propertyPrice) * 100;
-        if (depositPct < 10) {
-            insightLines.push(
-                "Your deposit looks on the lighter side, so lender choice may be narrower."
-            );
-        } else if (depositPct >= 20) {
-            insightLines.push(
-                "A stronger deposit usually improves flexibility and can reduce upfront pressure."
-            );
-        } else {
-            insightLines.push(
-                "Your deposit is a workable starting point, though structure will matter."
-            );
-        }
-    }
-
-    if (monthlyDebts > 0) {
-        insightLines.push(
-            "Existing monthly debts may reduce your range, so cleaning up liabilities can help."
-        );
-    }
-
-    if (input.isFirstHomeBuyer === true) {
-        insightLines.push(
-            "First-home-buyer support or stamp duty concessions may improve your overall position."
-        );
-    }
-
-    if (!insightLines.length) {
-        insightLines.push(
-            "A broker can often improve the structure even when the headline range looks tight."
-        );
+    let teaserLine =
+        "You may be close, but your deposit, debts, and overall setup could still affect the outcome.";
+    if (affordability === "achievable") {
+        teaserLine =
+            "At first glance, this property may be within reach — but things like deposit, debts, and lender rules still matter.";
+    } else if (affordability === "close") {
+        teaserLine =
+            "You may be close, but your deposit and existing debts could affect lender confidence.";
+    } else {
+        teaserLine =
+            "At this price, things may be a bit tight right now — but a bigger deposit, less debt, or a lower price point could help.";
     }
 
     return {
         kind: "purchase",
         borrowingLow,
         borrowingHigh,
-        budgetLow,
-        budgetHigh,
+        repaymentMid,
         repaymentLow,
         repaymentHigh,
         propertyPrice,
         deposit,
-        position,
+        affordability,
         bestCaseShortfall,
-        bestCaseBuffer,
-        insightLines: insightLines.slice(0, 3),
+        teaserLine,
     };
+}
+
+function deriveRemainingYearsFromPayment(
+    balance: number,
+    annualRatePercent: number,
+    monthlyPayment: number
+): number {
+    if (balance <= 0 || monthlyPayment <= 0) return 25;
+    const r = annualRatePercent / 100 / 12;
+    if (r <= 0) return 25;
+    const minPay = balance * r;
+    if (monthlyPayment <= minPay) return 25;
+    const inner = 1 - (balance * r) / monthlyPayment;
+    if (inner <= 0 || inner >= 1) return 25;
+    const months = -Math.log(inner) / Math.log(1 + r);
+    const years = months / 12;
+    return clamp(years, 1, 30);
 }
 
 function computeRefinanceEstimate(input: RefinanceDetails): RefinanceEstimate {
     const loanBalance = parseMoney(input.loanBalance);
     const rate = parseMoney(input.interestRate);
-    const loanTermYears = clamp(
-        Math.round(parseMoney(input.loanTermYears) || 25),
-        1,
-        40
-    );
     const propertyValue = parseMoney(input.propertyValue);
-    const currentRepaymentInput = parseMoney(input.currentRepayment);
+    const currentRepaymentEstimate = parseMoney(input.currentRepayment);
 
-    const currentRepaymentEstimate =
-        currentRepaymentInput > 0
-            ? currentRepaymentInput
-            : calcMonthlyPayment(
-                loanBalance,
-                Math.max(rate, 0.1) / 100,
-                loanTermYears
-            );
+    const remainingYears = deriveRemainingYearsFromPayment(
+        loanBalance,
+        rate,
+        currentRepaymentEstimate
+    );
 
     const improvedRateLow = Math.max(rate - 1.0, 4.99) / 100;
     const improvedRateHigh = Math.max(rate - 0.4, 5.49) / 100;
@@ -443,12 +482,12 @@ function computeRefinanceEstimate(input: RefinanceDetails): RefinanceEstimate {
     const improvedRepaymentLow = calcMonthlyPayment(
         loanBalance,
         improvedRateLow,
-        loanTermYears
+        remainingYears
     );
     const improvedRepaymentHigh = calcMonthlyPayment(
         loanBalance,
         improvedRateHigh,
-        loanTermYears
+        remainingYears
     );
 
     const savingsLow = Math.max(currentRepaymentEstimate - improvedRepaymentHigh, 0);
@@ -456,40 +495,18 @@ function computeRefinanceEstimate(input: RefinanceDetails): RefinanceEstimate {
 
     const lvr = propertyValue > 0 ? (loanBalance / propertyValue) * 100 : null;
 
-    let position: "strong" | "possible" | "review" = "review";
-    if (savingsHigh >= 250) position = "strong";
-    else if (savingsHigh >= 80) position = "possible";
+    let worthwhile: RefinanceEstimate["worthwhile"] = "unclear";
+    if (savingsHigh >= 250) worthwhile = "likely";
+    else if (savingsHigh >= 80) worthwhile = "maybe";
 
-    const insightLines: string[] = [];
-
-    if (savingsHigh >= 250) {
-        insightLines.push(
-            "Your current setup looks worth reviewing because the rate gap may be meaningful."
-        );
-    } else if (savingsHigh > 0) {
-        insightLines.push(
-            "There may be room to improve your repayments, depending on product fit and fees."
-        );
-    } else {
-        insightLines.push(
-            "A deeper refinance review may still help if your goal is features, flexibility or structure."
-        );
-    }
-
-    if (lvr !== null) {
-        if (lvr <= 80) {
-            insightLines.push("Your loan-to-value position looks relatively healthy.");
-        } else {
-            insightLines.push(
-                "Your equity position may affect the lender options available."
-            );
-        }
-    }
-
-    if (!currentRepaymentInput) {
-        insightLines.push(
-            "Your current repayment was estimated for preview purposes because no live repayment was entered."
-        );
+    let teaserLine =
+        "There may be room to improve your current loan, but the result depends on your equity and current rate.";
+    if (worthwhile === "likely") {
+        teaserLine =
+            "There may be meaningful monthly savings on the table — worth a proper comparison.";
+    } else if (worthwhile === "maybe") {
+        teaserLine =
+            "There may be room to improve your current loan, but the result depends on your equity and current rate.";
     }
 
     return {
@@ -500,12 +517,132 @@ function computeRefinanceEstimate(input: RefinanceDetails): RefinanceEstimate {
         savingsLow,
         savingsHigh,
         lvr,
-        position,
-        insightLines: insightLines.slice(0, 3),
+        worthwhile,
+        remainingYears,
+        teaserLine,
     };
 }
 
-function validatePurchaseDetails(data: PurchaseDetails): FieldErrors {
+function buildFullPurchaseResult(
+    goal: "buy_home" | "first_home" | "invest",
+    input: PurchaseDetails,
+    est: PurchaseEstimate
+): FullPurchaseResult {
+    const deposit = est.deposit;
+    const price = est.propertyPrice;
+    const depositPct = price > 0 ? (deposit / price) * 100 : 0;
+    const totalInc =
+        parseMoney(input.annualIncome) +
+        (input.hasSecondApplicant ? parseMoney(input.secondIncome) : 0);
+
+    const strengths: string[] = [];
+    const watchouts: string[] = [];
+    const nextSteps: string[] = [];
+
+    if (totalInc >= 80000) strengths.push("Strong household income relative to many scenarios.");
+    if (depositPct >= 15 && price > 0) strengths.push("Good deposit relative to the price entered.");
+    if (parseMoney(input.monthlyDebts) < totalInc / 12 / 8)
+        strengths.push("Existing debts appear manageable at a headline level.");
+    if (
+        input.buyTimeline === "asap" ||
+        input.buyTimeline === "1_3"
+    ) {
+        strengths.push("Buying timeline looks clear, which helps with next steps.");
+    }
+    if (!strengths.length) {
+        strengths.push("You’ve provided enough detail for a useful first-pass view.");
+    }
+
+    if (depositPct > 0 && depositPct < 10 && price > 0) {
+        watchouts.push("Deposit may be slightly thin for this price point.");
+    }
+    if (parseMoney(input.monthlyDebts) > 0) {
+        watchouts.push("Existing debt commitments may reduce borrowing power.");
+    }
+    if (
+        goal !== "invest" &&
+        (input.employmentType === "self_employed" ||
+            input.employmentType === "casual_contractor")
+    ) {
+        watchouts.push("Self-employed or non‑PAYG income may require more lender assessment.");
+    }
+    if (est.affordability === "close" || est.affordability === "difficult") {
+        watchouts.push("Rate sensitivity may affect affordability at the upper end of your range.");
+    }
+
+    nextSteps.push("Increase deposit to improve borrowing comfort where possible.");
+    nextSteps.push("Reduce existing debt to strengthen serviceability if you can.");
+    if (est.affordability === "difficult") {
+        nextSteps.push("Review price range slightly lower for stronger approval odds.");
+    }
+    nextSteps.push(`Speak to ${BROKER_NAME} to identify lenders likely to suit your scenario.`);
+
+    let headline = "You may be close, but there are a few issues to improve";
+    if (est.affordability === "achievable") {
+        headline = "This property looks realistically within reach";
+    } else if (est.affordability === "difficult") {
+        headline = "This purchase may be difficult right now without changes";
+    }
+
+    return {
+        kind: "purchase",
+        headline,
+        strengths: strengths.slice(0, 5),
+        watchouts: watchouts.slice(0, 5),
+        nextSteps: nextSteps.slice(0, 5),
+    };
+}
+
+function buildFullRefinanceResult(
+    input: RefinanceDetails,
+    est: RefinanceEstimate
+): FullRefinanceResult {
+    const strengths: string[] = [];
+    const watchouts: string[] = [];
+    const nextSteps: string[] = [];
+
+    if (est.savingsHigh >= 150) {
+        strengths.push("There may be a meaningful gap between your current rate and market options.");
+    }
+    if (est.lvr !== null && est.lvr <= 80) {
+        strengths.push("Equity position may support a wider set of refinance options.");
+    }
+    if (parseMoney(input.monthlyDebts) === 0) {
+        strengths.push("Household debt commitments outside the home loan look contained.");
+    }
+    if (!strengths.length) {
+        strengths.push("Your numbers are clear enough to compare options with a broker.");
+    }
+
+    if (est.lvr !== null && est.lvr > 85) {
+        watchouts.push("Higher LVR can limit lender choice and pricing.");
+    }
+    if (est.worthwhile === "unclear") {
+        watchouts.push("Savings after fees may be modest — a full cost comparison matters.");
+    }
+
+    nextSteps.push("Review your current rate against current lending options.");
+    nextSteps.push("Check whether equity access is possible if that is your goal.");
+    nextSteps.push("Assess whether refinancing costs are justified by potential savings.");
+
+    let headline = "There could be a refinancing opportunity worth reviewing";
+    if (est.worthwhile === "likely") {
+        headline = "You may be in a position to improve your current loan";
+    }
+
+    return {
+        kind: "refinance",
+        headline,
+        strengths: strengths.slice(0, 5),
+        watchouts: watchouts.slice(0, 5),
+        nextSteps: nextSteps.slice(0, 5),
+    };
+}
+
+function validatePurchaseDetails(
+    data: PurchaseDetails,
+    path: "buy_home" | "first_home" | "invest"
+): FieldErrors {
     const nextErrors: FieldErrors = {};
     const propertyPrice = parseMoney(data.propertyPrice);
     const deposit = parseMoney(data.deposit);
@@ -513,9 +650,6 @@ function validatePurchaseDetails(data: PurchaseDetails): FieldErrors {
     const secondIncome = parseMoney(data.secondIncome);
     const monthlyDebts = parseMoney(data.monthlyDebts);
 
-    if (data.isFirstHomeBuyer === null) {
-        nextErrors.isFirstHomeBuyer = "Please choose yes or no.";
-    }
     if (propertyPrice < 100000 || propertyPrice > 20000000) {
         nextErrors.propertyPrice = "Enter a realistic property price.";
     }
@@ -525,20 +659,41 @@ function validatePurchaseDetails(data: PurchaseDetails): FieldErrors {
     if (annualIncome < 20000 || annualIncome > 2000000) {
         nextErrors.annualIncome = "Enter a realistic annual income.";
     }
-    if (data.secondIncome && (secondIncome < 0 || secondIncome > 2000000)) {
-        nextErrors.secondIncome = "Enter a realistic second income.";
+    if (data.hasSecondApplicant === null) {
+        nextErrors.hasSecondApplicant = "Please indicate if there is a second applicant.";
+    }
+    if (data.hasSecondApplicant === true) {
+        if (secondIncome < 1000 || secondIncome > 2000000) {
+            nextErrors.secondIncome = "Enter the second applicant’s annual income.";
+        }
     }
     if (monthlyDebts < 0 || monthlyDebts > 50000) {
         nextErrors.monthlyDebts = "Enter a realistic monthly debt figure.";
     }
-    if (!data.employmentType) {
-        nextErrors.employmentType = "Choose your employment type.";
+    if (path === "buy_home" || path === "first_home") {
+        if (!data.employmentType) {
+            nextErrors.employmentType = "Choose your employment type.";
+        }
     }
-    if (!isValidPostcode(data.postcode)) {
-        nextErrors.postcode = "Enter a valid 4-digit postcode.";
+    if (path === "first_home") {
+        if (data.fhbStatus !== "yes" && data.fhbStatus !== "unsure") {
+            nextErrors.fhbStatus = "Please select an option.";
+        }
+    }
+    if (path === "invest") {
+        if (data.ownsProperty !== true && data.ownsProperty !== false) {
+            nextErrors.ownsProperty = "Please indicate if you currently own property.";
+        }
+        const wr = data.weeklyRent.trim();
+        if (wr && (parseMoney(wr) < 0 || parseMoney(wr) > 50000)) {
+            nextErrors.weeklyRent = "Enter a realistic weekly rent, or leave blank.";
+        }
+    }
+    if (!data.buyTimeline) {
+        nextErrors.buyTimeline = "Choose when you’re looking to buy.";
     }
     if (!isValidUrl(data.listingUrl)) {
-        nextErrors.listingUrl = "Enter a valid property link.";
+        nextErrors.listingUrl = "Enter a valid http(s) link, or leave blank.";
     }
 
     return nextErrors;
@@ -548,9 +703,10 @@ function validateRefinanceDetails(data: RefinanceDetails): FieldErrors {
     const nextErrors: FieldErrors = {};
     const loanBalance = parseMoney(data.loanBalance);
     const interestRate = parseMoney(data.interestRate);
-    const loanTermYears = parseMoney(data.loanTermYears);
     const propertyValue = parseMoney(data.propertyValue);
     const currentRepayment = parseMoney(data.currentRepayment);
+    const annualIncome = parseMoney(data.annualIncome);
+    const monthlyDebts = parseMoney(data.monthlyDebts);
 
     if (loanBalance < 10000 || loanBalance > 20000000) {
         nextErrors.loanBalance = "Enter a realistic loan balance.";
@@ -558,17 +714,23 @@ function validateRefinanceDetails(data: RefinanceDetails): FieldErrors {
     if (interestRate <= 0 || interestRate > 20) {
         nextErrors.interestRate = "Enter a realistic interest rate.";
     }
-    if (loanTermYears < 1 || loanTermYears > 40) {
-        nextErrors.loanTermYears = "Enter a realistic remaining term.";
-    }
     if (propertyValue < 50000 || propertyValue > 25000000) {
         nextErrors.propertyValue = "Enter a realistic property value.";
     }
-    if (data.currentRepayment && (currentRepayment <= 0 || currentRepayment > 50000)) {
-        nextErrors.currentRepayment = "Enter a realistic monthly repayment.";
+    if (currentRepayment <= 0 || currentRepayment > 50000) {
+        nextErrors.currentRepayment = "Enter your current monthly repayment.";
     }
-    if (!isValidPostcode(data.postcode)) {
-        nextErrors.postcode = "Enter a valid 4-digit postcode.";
+    if (annualIncome < 20000 || annualIncome > 2000000) {
+        nextErrors.annualIncome = "Enter a realistic annual household income.";
+    }
+    if (monthlyDebts < 0 || monthlyDebts > 50000) {
+        nextErrors.monthlyDebts = "Enter a realistic monthly debt figure.";
+    }
+    if (!data.refinanceGoal) {
+        nextErrors.refinanceGoal = "Choose your goal.";
+    }
+    if (!data.refinanceTimeline) {
+        nextErrors.refinanceTimeline = "Choose your timeline.";
     }
 
     return nextErrors;
@@ -576,49 +738,27 @@ function validateRefinanceDetails(data: RefinanceDetails): FieldErrors {
 
 function canRestoreToStep(goal: Goal | null, purchase: PurchaseDetails, refi: RefinanceDetails) {
     if (!goal) return 1;
-    if (goal === "buy" || goal === "invest") {
-        return Object.keys(validatePurchaseDetails(purchase)).length === 0 ? 3 : 2;
+    if (goal === "buy_home") {
+        return Object.keys(validatePurchaseDetails(purchase, "buy_home")).length === 0 ? 3 : 2;
+    }
+    if (goal === "first_home") {
+        return Object.keys(validatePurchaseDetails(purchase, "first_home")).length === 0 ? 3 : 2;
+    }
+    if (goal === "invest") {
+        return Object.keys(validatePurchaseDetails(purchase, "invest")).length === 0 ? 3 : 2;
     }
     return Object.keys(validateRefinanceDetails(refi)).length === 0 ? 3 : 2;
 }
 
 function ProgressBar({ step, total }: { step: number; total: number }) {
+    const pct = Math.min(100, Math.round((step / total) * 100));
     return (
-        <div
-            style={{
-                display: "flex",
-                gap: 6,
-                marginBottom: 28,
-                alignItems: "center",
-            }}
-            aria-hidden="true"
-        >
-            {Array.from({ length: total }).map((_, i) => (
-                <div
-                    key={i}
-                    style={{
-                        flex: i === step - 1 ? "2 1 0" : "1 1 0",
-                        height: 4,
-                        borderRadius: 999,
-                        background:
-                            i < step
-                                ? "var(--accent, #111827)"
-                                : "var(--border, rgba(0,0,0,0.12))",
-                        opacity: i < step - 1 ? 0.35 : 1,
-                        transition: "all 180ms ease",
-                    }}
-                />
-            ))}
-            <span
-                style={{
-                    fontSize: 12,
-                    color: "var(--text-muted, #6b7280)",
-                    marginLeft: 8,
-                    whiteSpace: "nowrap",
-                    fontWeight: 600,
-                }}
-            >
-                {step} / {total}
+        <div className={styles.progressWrap} aria-hidden="true">
+            <div className={styles.progressTrack}>
+                <div className={styles.progressFill} style={{ width: `${pct}%` }} />
+            </div>
+            <span className={styles.progressLabel}>
+                Step {step} of {total}
             </span>
         </div>
     );
@@ -626,115 +766,92 @@ function ProgressBar({ step, total }: { step: number; total: number }) {
 
 function BackButton({ onClick }: { onClick: () => void }) {
     return (
-        <button
-            type="button"
-            onClick={onClick}
-            style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                border: "none",
-                background: "transparent",
-                padding: 0,
-                marginBottom: 22,
-                cursor: "pointer",
-                color: "var(--text-muted, #6b7280)",
-                fontSize: 13,
-                fontWeight: 600,
-            }}
-        >
+        <button type="button" onClick={onClick} className={styles.back}>
             ← Back
         </button>
     );
 }
 
+function TransitionLoadingScreen({
+    kind,
+    onCancel,
+}: {
+    kind: "estimate" | "contact";
+    onCancel: () => void;
+}) {
+    const title =
+        kind === "estimate" ? "Preparing your estimate" : "Almost there";
+    const sub =
+        kind === "estimate"
+            ? "Crunching the numbers based on your details."
+            : "Getting your personalised breakdown ready.";
+
+    return (
+        <div className={styles.transitionRoot}>
+            <BackButton onClick={onCancel} />
+            <div className={styles.transitionBody}>
+                <div className={styles.transitionSpinner} aria-hidden />
+                <h2 className={styles.transitionTitle}>{title}</h2>
+                <p className={styles.transitionSub}>{sub}</p>
+                <div className={styles.transitionDots} aria-hidden>
+                    <span />
+                    <span />
+                    <span />
+                </div>
+            </div>
+        </div>
+    );
+}
+
 function TrustRow() {
     const items = [
-        "Estimate in under 60 seconds",
-        "No credit score impact",
-        "Secure form",
+        "Takes less than 60 seconds",
+        "No impact on your credit score",
+        "Your details stay secure",
     ];
 
     return (
-        <div
-            style={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 14,
-                justifyContent: "center",
-                borderTop: "1px solid var(--border, rgba(0,0,0,0.1))",
-                marginTop: 22,
-                paddingTop: 18,
-            }}
-        >
+        <div className={styles.trust}>
             {items.map((item) => (
-                <span
-                    key={item}
-                    style={{
-                        fontSize: 12,
-                        color: "var(--text-muted, #6b7280)",
-                        fontWeight: 600,
-                    }}
-                >
-                    {item}
-                </span>
+                <span key={item}>{item}</span>
             ))}
         </div>
     );
 }
 
-function GoalButton({
+function GoalPathCard({
     selected,
     icon,
-    label,
+    title,
+    description,
     onClick,
 }: {
     selected: boolean;
     icon: string;
-    label: string;
+    title: string;
+    description: string;
     onClick: () => void;
 }) {
     return (
         <button
             type="button"
             onClick={onClick}
-            style={{
-                width: "100%",
-                textAlign: "left",
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                padding: "16px 16px",
-                borderRadius: 18,
-                border: selected
-                    ? "1px solid var(--accent, #111827)"
-                    : "1px solid var(--border, rgba(0,0,0,0.12))",
-                background: selected ? "rgba(0,0,0,0.03)" : "transparent",
-                cursor: "pointer",
-                transition: "all 150ms ease",
-            }}
+            className={cx(styles.pathCard, selected && styles.pathCardSelected)}
             aria-pressed={selected}
         >
-            <span style={{ fontSize: 20 }}>{icon}</span>
-            <span
-                style={{
-                    fontSize: 15,
-                    fontWeight: 700,
-                    color: "var(--text, #111827)",
-                    flex: 1,
-                }}
-            >
-                {label}
-            </span>
-            <span
-                style={{
-                    fontSize: 16,
-                    fontWeight: 700,
-                    opacity: selected ? 1 : 0,
-                }}
-            >
-                ✓
-            </span>
+            <div className={styles.pathRow}>
+                <span className={styles.pathIcon} aria-hidden>
+                    {icon}
+                </span>
+                <span className={styles.pathTitle}>{title}</span>
+                <span
+                    className={cx(styles.pathCheck, selected && styles.pathCheckVisible)}
+                    aria-hidden
+                >
+                    ✓
+                </span>
+            </div>
+            <p className={styles.pathDesc}>{description}</p>
         </button>
     );
 }
@@ -751,47 +868,14 @@ function StatCard({
     emphasized?: boolean;
 }) {
     return (
-        <div
-            style={{
-                border: "1px solid var(--border, rgba(0,0,0,0.12))",
-                borderRadius: 20,
-                padding: 18,
-                background: "rgba(255,255,255,0.55)",
-            }}
-        >
+        <div className={styles.stat}>
+            <div className={styles.statLabel}>{label}</div>
             <div
-                style={{
-                    fontSize: 12,
-                    color: "var(--text-muted, #6b7280)",
-                    marginBottom: 8,
-                    fontWeight: 600,
-                }}
-            >
-                {label}
-            </div>
-            <div
-                style={{
-                    fontSize: emphasized ? 28 : 24,
-                    lineHeight: 1.1,
-                    fontWeight: 800,
-                    letterSpacing: "-0.03em",
-                    color: "var(--text, #111827)",
-                }}
+                className={cx(styles.statValue, emphasized && styles.statValueLg)}
             >
                 {value}
             </div>
-            {sub ? (
-                <div
-                    style={{
-                        marginTop: 8,
-                        fontSize: 12,
-                        color: "var(--text-muted, #6b7280)",
-                        lineHeight: 1.45,
-                    }}
-                >
-                    {sub}
-                </div>
-            ) : null}
+            {sub ? <div className={styles.statSub}>{sub}</div> : null}
         </div>
     );
 }
@@ -803,28 +887,14 @@ function Notice({
     tone: "neutral" | "success" | "warning";
     children: ReactNode;
 }) {
-    const border =
+    const toneClass =
         tone === "success"
-            ? "rgba(16, 185, 129, 0.25)"
+            ? styles.noticeSuccess
             : tone === "warning"
-                ? "rgba(245, 158, 11, 0.25)"
-                : "rgba(0,0,0,0.1)";
+                ? styles.noticeWarning
+                : "";
 
-    return (
-        <div
-            style={{
-                border: `1px solid ${border}`,
-                borderRadius: 18,
-                padding: 16,
-                background: "rgba(255,255,255,0.6)",
-                fontSize: 14,
-                lineHeight: 1.55,
-                color: "var(--text, #111827)",
-            }}
-        >
-            {children}
-        </div>
-    );
+    return <div className={cx(styles.notice, toneClass)}>{children}</div>;
 }
 
 function FieldError({
@@ -836,15 +906,7 @@ function FieldError({
 }) {
     if (!children) return null;
     return (
-        <div
-            id={id}
-            style={{
-                marginTop: 8,
-                fontSize: 12,
-                color: "#b91c1c",
-                fontWeight: 600,
-            }}
-        >
+        <div id={id} className={styles.fieldError}>
             {children}
         </div>
     );
@@ -922,7 +984,7 @@ function TurnstileWidget({
     }, [siteKey, onExpired, onToken]);
 
     if (!siteKey) return null;
-    return <div ref={containerRef} style={{ marginTop: 14 }} />;
+    return <div ref={containerRef} className={styles.turnstile} />;
 }
 
 export default function MortgageLeadMagnetPage() {
@@ -940,8 +1002,19 @@ export default function MortgageLeadMagnetPage() {
     const [submitStatus, setSubmitStatus] = useState<SubmitStatus>({ type: "idle" });
     const [errors, setErrors] = useState<FieldErrors>({});
     const [turnstileToken, setTurnstileToken] = useState("");
+    const [consentAccepted, setConsentAccepted] = useState(false);
+    const [resultBundle, setResultBundle] = useState<{
+        lead: LeadDetails;
+        full: FullResult;
+        estimate: PreviewEstimate;
+        /** Snapshot so step 5 doesn’t depend on form state */
+        refiLoanBalance?: number;
+    } | null>(null);
 
-    const isPurchase = goal === "buy" || goal === "invest";
+    const [stepTransition, setStepTransition] = useState<
+        "idle" | "estimate" | "contact"
+    >("idle");
+    const transitionTimerRef = useRef<number | null>(null);
 
     useEffect(() => {
         try {
@@ -956,7 +1029,10 @@ export default function MortgageLeadMagnetPage() {
             };
 
             const restoredGoal =
-                parsed.goal === "buy" || parsed.goal === "invest" || parsed.goal === "refinance"
+                parsed.goal === "buy_home" ||
+                    parsed.goal === "first_home" ||
+                    parsed.goal === "invest" ||
+                    parsed.goal === "refinance"
                     ? parsed.goal
                     : null;
 
@@ -1022,10 +1098,18 @@ export default function MortgageLeadMagnetPage() {
 
     const previewEstimate: PreviewEstimate = useMemo(() => {
         if (!goal) return null;
-        return isPurchase
-            ? computePurchaseEstimate(purchase)
-            : computeRefinanceEstimate(refi);
-    }, [goal, isPurchase, purchase, refi]);
+        if (goal === "buy_home") return computePurchaseEstimate(purchase, "buy_home");
+        if (goal === "first_home") return computePurchaseEstimate(purchase, "first_home");
+        if (goal === "invest") return computePurchaseEstimate(purchase, "invest");
+        return computeRefinanceEstimate(refi);
+    }, [goal, purchase, refi]);
+
+    /** Midpoint of estimated monthly savings range — same basis as StatCard range on step 3 */
+    const refinanceMonthlyOverpayMid = useMemo(() => {
+        if (!previewEstimate || previewEstimate.kind !== "refinance") return null;
+        const { savingsLow, savingsHigh } = previewEstimate;
+        return Math.round((savingsLow + savingsHigh) / 2);
+    }, [previewEstimate]);
 
     const handleTurnstileToken = useCallback((token: string) => {
         setTurnstileToken(token);
@@ -1047,6 +1131,21 @@ export default function MortgageLeadMagnetPage() {
         }, 40);
     }
 
+    const clearTransitionTimer = useCallback(() => {
+        if (transitionTimerRef.current !== null) {
+            clearTimeout(transitionTimerRef.current);
+            transitionTimerRef.current = null;
+        }
+    }, []);
+
+    useEffect(() => () => clearTransitionTimer(), [clearTransitionTimer]);
+
+    const handleCancelTransition = useCallback(() => {
+        clearTransitionTimer();
+        setStepTransition("idle");
+        scrollTopSoft();
+    }, [clearTransitionTimer]);
+
     function nextStep() {
         setStep((s) => Math.min(s + 1, 5));
         scrollTopSoft();
@@ -1054,7 +1153,17 @@ export default function MortgageLeadMagnetPage() {
 
     function prevStep() {
         setSubmitStatus({ type: "idle" });
-        setStep((s) => Math.max(s - 1, 1));
+        if (stepTransition !== "idle") {
+            clearTransitionTimer();
+            setStepTransition("idle");
+            scrollTopSoft();
+            return;
+        }
+        setStep((s) => {
+            const next = Math.max(s - 1, 1);
+            if (next <= 2) setResultBundle(null);
+            return next;
+        });
         scrollTopSoft();
     }
 
@@ -1075,9 +1184,21 @@ export default function MortgageLeadMagnetPage() {
     }
 
     function validateStep2(): boolean {
-        const nextErrors = isPurchase
-            ? validatePurchaseDetails(purchase)
-            : validateRefinanceDetails(refi);
+        if (!goal) {
+            setErrors({});
+            return false;
+        }
+        const nextErrors =
+            goal === "refinance"
+                ? validateRefinanceDetails(refi)
+                : validatePurchaseDetails(
+                    purchase,
+                    goal === "buy_home"
+                        ? "buy_home"
+                        : goal === "first_home"
+                            ? "first_home"
+                            : "invest"
+                );
 
         setErrors(nextErrors);
         return Object.keys(nextErrors).length === 0;
@@ -1098,6 +1219,9 @@ export default function MortgageLeadMagnetPage() {
         if (TURNSTILE_SITE_KEY && !turnstileToken) {
             nextErrors.turnstile = "Please complete the security check.";
         }
+        if (!consentAccepted) {
+            nextErrors.consent = "Please confirm you agree to be contacted.";
+        }
 
         setErrors(nextErrors);
         return Object.keys(nextErrors).length === 0;
@@ -1112,7 +1236,23 @@ export default function MortgageLeadMagnetPage() {
     function handleContinueFromStep2() {
         if (!validateStep2()) return;
         track("mortgage_details_completed", { goal });
-        nextStep();
+        setStepTransition("estimate");
+        clearTransitionTimer();
+        transitionTimerRef.current = window.setTimeout(() => {
+            transitionTimerRef.current = null;
+            setStepTransition("idle");
+            nextStep();
+        }, 2000);
+    }
+
+    function handleContinueToContact() {
+        setStepTransition("contact");
+        clearTransitionTimer();
+        transitionTimerRef.current = window.setTimeout(() => {
+            transitionTimerRef.current = null;
+            setStepTransition("idle");
+            nextStep();
+        }, 1000);
     }
 
     async function handleSubmit(e: FormEvent) {
@@ -1127,22 +1267,76 @@ export default function MortgageLeadMagnetPage() {
         const timeout = window.setTimeout(() => controller.abort(), 15000);
 
         try {
+            if (!goal || !previewEstimate) {
+                throw new Error("Missing goal or estimate.");
+            }
+
+            const fullResult: FullResult =
+                previewEstimate.kind === "purchase"
+                    ? buildFullPurchaseResult(
+                        goal === "buy_home"
+                            ? "buy_home"
+                            : goal === "first_home"
+                                ? "first_home"
+                                : "invest",
+                        purchase,
+                        previewEstimate
+                    )
+                    : buildFullRefinanceResult(refi, previewEstimate);
+
+            const rawInputs =
+                goal === "refinance"
+                    ? {
+                        loanBalance: String(parseMoney(refi.loanBalance)),
+                        propertyValue: String(parseMoney(refi.propertyValue)),
+                        interestRate: String(parseMoney(refi.interestRate)),
+                        currentRepayment: String(parseMoney(refi.currentRepayment)),
+                        annualIncome: String(parseMoney(refi.annualIncome)),
+                        monthlyDebts: String(parseMoney(refi.monthlyDebts)),
+                        refinanceGoal: refi.refinanceGoal,
+                        refinanceTimeline: refi.refinanceTimeline,
+                    }
+                    : {
+                        propertyPrice: String(parseMoney(purchase.propertyPrice)),
+                        deposit: String(parseMoney(purchase.deposit)),
+                        annualIncome: String(parseMoney(purchase.annualIncome)),
+                        hasSecondApplicant: purchase.hasSecondApplicant === true,
+                        secondIncome: String(
+                            purchase.hasSecondApplicant
+                                ? parseMoney(purchase.secondIncome)
+                                : 0
+                        ),
+                        monthlyDebts: String(parseMoney(purchase.monthlyDebts)),
+                        buyTimeline: purchase.buyTimeline,
+                        listingUrl: purchase.listingUrl.trim(),
+                        ...(goal === "buy_home" || goal === "first_home"
+                            ? { employmentType: purchase.employmentType }
+                            : {}),
+                        ...(goal === "first_home"
+                            ? { fhbStatus: purchase.fhbStatus }
+                            : {}),
+                        ...(goal === "invest"
+                            ? {
+                                ownsProperty: purchase.ownsProperty === true,
+                                ...(purchase.weeklyRent.trim()
+                                    ? {
+                                        weeklyRent: String(
+                                            parseMoney(purchase.weeklyRent)
+                                        ),
+                                    }
+                                    : {}),
+                            }
+                            : {}),
+                    };
+
             const payload = {
                 source: "website",
                 formType: "mortgage_lead_magnet",
                 previewVersion: PREVIEW_VERSION,
                 goal,
                 honeypot,
-                rawInputs: isPurchase
-                    ? {
-                        ...purchase,
-                        postcode: purchase.postcode.trim(),
-                        listingUrl: purchase.listingUrl.trim(),
-                    }
-                    : {
-                        ...refi,
-                        postcode: refi.postcode.trim(),
-                    },
+                consentAccepted: true,
+                rawInputs,
                 lead: {
                     fullName: lead.fullName.trim(),
                     email: lead.email.trim().toLowerCase(),
@@ -1157,6 +1351,7 @@ export default function MortgageLeadMagnetPage() {
                     turnstileToken: turnstileToken || null,
                 },
                 previewEstimate,
+                fullResult,
             };
 
             const res = await fetch("/api/mortgage-broker-demo", {
@@ -1169,40 +1364,52 @@ export default function MortgageLeadMagnetPage() {
             });
 
             const rawText = await res.text();
-            let maybeJson: any = null;
+            let maybeJson: Record<string, unknown> | null = null;
 
             try {
-                maybeJson = rawText ? JSON.parse(rawText) : null;
+                maybeJson = rawText
+                    ? (JSON.parse(rawText) as Record<string, unknown>)
+                    : null;
             } catch {
                 maybeJson = null;
             }
 
             if (!res.ok) {
+                const msg =
+                    typeof maybeJson?.message === "string"
+                        ? maybeJson.message
+                        : typeof maybeJson?.error === "string"
+                            ? maybeJson.error
+                            : null;
                 const debugMessage =
-                    maybeJson?.message ||
-                    maybeJson?.error ||
+                    msg ||
                     rawText ||
                     `Request failed with status ${res.status}`;
 
-                throw new Error(
-                    `[DEBUG] status=${res.status} statusText=${res.statusText} message=${debugMessage}`
-                );
+                throw new Error(debugMessage);
             }
 
-            console.log("[DEBUG] submit success:", {
-                status: res.status,
-                response: maybeJson ?? rawText,
-            });
-
             setSubmitStatus({ type: "success" });
+            setResultBundle({
+                lead: {
+                    fullName: lead.fullName.trim(),
+                    email: lead.email.trim().toLowerCase(),
+                    phone: sanitizePhone(lead.phone),
+                },
+                full: fullResult,
+                estimate: previewEstimate,
+                refiLoanBalance:
+                    goal === "refinance" ? parseMoney(refi.loanBalance) : undefined,
+            });
             setLead(DEFAULT_LEAD);
+            setConsentAccepted(false);
             setTurnstileToken("");
             setHoneypot("");
             sessionStorage.removeItem(STORAGE_KEY);
             track("mortgage_lead_submitted", { goal });
             nextStep();
         } catch (err) {
-            console.error("[DEBUG] handleSubmit error:", err);
+            console.error("handleSubmit error:", err);
 
             setSubmitStatus({
                 type: "error",
@@ -1216,95 +1423,13 @@ export default function MortgageLeadMagnetPage() {
         }
     }
 
-    const sectionStyle: CSSProperties = {
-        width: "100%",
-        padding: "48px 0",
-    };
-
-    const cardStyle: CSSProperties = {
-        maxWidth: 760,
-        margin: "0 auto",
-        borderRadius: 28,
-        padding: 24,
-        border: "1px solid var(--border, rgba(0,0,0,0.1))",
-        background:
-            "linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(255,255,255,0.78) 100%)",
-        boxShadow: "0 18px 60px rgba(0,0,0,0.06)",
-        backdropFilter: "blur(8px)",
-    };
-
-    const grid3: CSSProperties = {
-        display: "grid",
-        gap: 14,
-        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-    };
-
-    const grid2: CSSProperties = {
-        display: "grid",
-        gap: 14,
-        gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    };
-
-    const inputStyle: CSSProperties = {
-        width: "100%",
-        borderRadius: 16,
-        border: "1px solid var(--border, rgba(0,0,0,0.12))",
-        padding: "14px 14px",
-        fontSize: 15,
-        outline: "none",
-        background: "rgba(255,255,255,0.88)",
-        color: "var(--text, #111827)",
-    };
-
-    const selectStyle: CSSProperties = inputStyle;
-
-    const labelStyle: CSSProperties = {
-        display: "block",
-        marginBottom: 8,
-        fontSize: 13,
-        fontWeight: 700,
-        color: "var(--text, #111827)",
-    };
-
-    const helpStyle: CSSProperties = {
-        marginTop: 8,
-        fontSize: 12,
-        color: "var(--text-muted, #6b7280)",
-    };
-
-    const buttonPrimary: CSSProperties = {
-        width: "100%",
-        border: "none",
-        borderRadius: 18,
-        padding: "15px 18px",
-        fontSize: 15,
-        fontWeight: 800,
-        cursor: "pointer",
-        background: "var(--accent, #111827)",
-        color: "#fff",
-        marginTop: 10,
-    };
-
     return (
-        <section style={sectionStyle} ref={topRef}>
-            <div
-                className="container"
-                style={{ maxWidth: 1080, padding: "0 20px", margin: "0 auto" }}
-            >
-                <div style={cardStyle}>
+        <section className={styles.root} ref={topRef}>
+            <div className={`container ${styles.shell}`}>
+                <div className={styles.card}>
                     {step <= 4 ? <ProgressBar step={step} total={4} /> : null}
 
-                    <div
-                        aria-live="polite"
-                        style={{
-                            position: "absolute",
-                            width: 1,
-                            height: 1,
-                            overflow: "hidden",
-                            clipPath: "inset(50%)",
-                            whiteSpace: "nowrap",
-                        }}
-                    >
+                    <div className={styles.srOnly} aria-live="polite">
                         {submitStatus.type === "loading"
                             ? "Sending your details"
                             : submitStatus.type === "error"
@@ -1312,1169 +1437,1447 @@ export default function MortgageLeadMagnetPage() {
                                 : ""}
                     </div>
 
-                    {step === 1 && (
-                        <div>
-                            <div
-                                style={{
-                                    display: "inline-flex",
-                                    padding: "7px 12px",
-                                    borderRadius: 999,
-                                    background: "rgba(0,0,0,0.04)",
-                                    fontSize: 12,
-                                    fontWeight: 700,
-                                    marginBottom: 16,
-                                }}
-                            >
-                                60-second estimate
-                            </div>
-
-                            <h1
-                                ref={headingRef}
-                                tabIndex={-1}
-                                style={{
-                                    fontSize: "clamp(2rem, 4vw, 3rem)",
-                                    lineHeight: 1.02,
-                                    letterSpacing: "-0.04em",
-                                    margin: 0,
-                                    color: "var(--text, #111827)",
-                                    outline: "none",
-                                }}
-                            >
-                                See where you stand before you speak to a broker.
-                            </h1>
-
-                            <p
-                                style={{
-                                    marginTop: 14,
-                                    marginBottom: 24,
-                                    fontSize: 16,
-                                    lineHeight: 1.65,
-                                    color: "var(--text-muted, #6b7280)",
-                                    maxWidth: 680,
-                                }}
-                            >
-                                Get a quick borrowing or refinance estimate first. Then decide if you want
-                                the more detailed review.
-                            </p>
-
-                            <div style={{ display: "grid", gap: 12 }}>
-                                <GoalButton
-                                    selected={goal === "buy"}
-                                    icon="🏡"
-                                    label="Buy a home"
-                                    onClick={() => {
-                                        clearFieldError("goal");
-                                        setGoal("buy");
-                                    }}
-                                />
-                                <GoalButton
-                                    selected={goal === "invest"}
-                                    icon="📈"
-                                    label="Buy an investment property"
-                                    onClick={() => {
-                                        clearFieldError("goal");
-                                        setGoal("invest");
-                                    }}
-                                />
-                                <GoalButton
-                                    selected={goal === "refinance"}
-                                    icon="🔄"
-                                    label="Refinance my current loan"
-                                    onClick={() => {
-                                        clearFieldError("goal");
-                                        setGoal("refinance");
-                                    }}
-                                />
-                            </div>
-
-                            <FieldError id="goal-error">{errors.goal}</FieldError>
-
-                            <button
-                                type="button"
-                                onClick={handleContinueFromStep1}
-                                style={buttonPrimary}
-                            >
-                                Continue →
-                            </button>
-
-                            <TrustRow />
+                    {stepTransition !== "idle" ? (
+                        <div className={styles.srOnly} aria-live="assertive">
+                            {stepTransition === "estimate"
+                                ? "Preparing your estimate."
+                                : "Preparing your breakdown."}
                         </div>
-                    )}
+                    ) : null}
 
-                    {step === 2 && (
-                        <div>
-                            <BackButton onClick={prevStep} />
+                    {stepTransition !== "idle" ? (
+                        <TransitionLoadingScreen
+                            kind={stepTransition}
+                            onCancel={handleCancelTransition}
+                        />
+                    ) : (
+                        <>
+                            {step === 1 && (
+                                <div>
+                                    <div className={styles.heroCenter}>
 
-                            <div
-                                style={{
-                                    display: "inline-flex",
-                                    padding: "7px 12px",
-                                    borderRadius: 999,
-                                    background: "rgba(0,0,0,0.04)",
-                                    fontSize: 12,
-                                    fontWeight: 700,
-                                    marginBottom: 16,
-                                }}
-                            >
-                                {isPurchase ? "Your situation" : "Your current loan"}
-                            </div>
+                                        <h1 ref={headingRef} tabIndex={-1} className={styles.title}>
+                                            Could this property fit your budget?
+                                        </h1>
+                                        <p className={styles.subtitle}>
+                                            Get a quick estimate based on a real property price — not just a generic borrowing number.
+                                        </p>
 
-                            <h2
-                                ref={headingRef}
-                                tabIndex={-1}
-                                style={{
-                                    fontSize: "clamp(1.7rem, 3vw, 2.4rem)",
-                                    lineHeight: 1.05,
-                                    letterSpacing: "-0.04em",
-                                    margin: 0,
-                                    outline: "none",
-                                }}
-                            >
-                                {isPurchase
-                                    ? "Enter a few details for your estimate"
-                                    : "Enter a few details for your refinance check"}
-                            </h2>
-
-                            <p
-                                style={{
-                                    marginTop: 12,
-                                    marginBottom: 22,
-                                    fontSize: 15,
-                                    lineHeight: 1.65,
-                                    color: "var(--text-muted, #6b7280)",
-                                }}
-                            >
-                                This first pass is designed to be quick. You’ll get your estimate on the
-                                next screen.
-                            </p>
-
-                            {isPurchase ? (
-                                <>
-                                    <div style={{ marginBottom: 16 }}>
-                                        <div style={labelStyle}>Is this your first home? *</div>
-                                        <div style={grid2}>
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    clearFieldError("isFirstHomeBuyer");
-                                                    setPurchase((p) => ({ ...p, isFirstHomeBuyer: true }));
-                                                }}
-                                                style={{
-                                                    ...buttonPrimary,
-                                                    marginTop: 0,
-                                                    background:
-                                                        purchase.isFirstHomeBuyer === true
-                                                            ? "var(--accent, #111827)"
-                                                            : "transparent",
-                                                    color:
-                                                        purchase.isFirstHomeBuyer === true
-                                                            ? "#fff"
-                                                            : "var(--text, #111827)",
-                                                    border:
-                                                        purchase.isFirstHomeBuyer === true
-                                                            ? "1px solid var(--accent, #111827)"
-                                                            : "1px solid var(--border, rgba(0,0,0,0.12))",
-                                                }}
-                                                aria-pressed={purchase.isFirstHomeBuyer === true}
-                                            >
-                                                Yes
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    clearFieldError("isFirstHomeBuyer");
-                                                    setPurchase((p) => ({ ...p, isFirstHomeBuyer: false }));
-                                                }}
-                                                style={{
-                                                    ...buttonPrimary,
-                                                    marginTop: 0,
-                                                    background:
-                                                        purchase.isFirstHomeBuyer === false
-                                                            ? "var(--accent, #111827)"
-                                                            : "transparent",
-                                                    color:
-                                                        purchase.isFirstHomeBuyer === false
-                                                            ? "#fff"
-                                                            : "var(--text, #111827)",
-                                                    border:
-                                                        purchase.isFirstHomeBuyer === false
-                                                            ? "1px solid var(--accent, #111827)"
-                                                            : "1px solid var(--border, rgba(0,0,0,0.12))",
-                                                }}
-                                                aria-pressed={purchase.isFirstHomeBuyer === false}
-                                            >
-                                                No
-                                            </button>
-                                        </div>
-                                        <FieldError id="isFirstHomeBuyer-error">
-                                            {errors.isFirstHomeBuyer}
-                                        </FieldError>
+                                        <p className={styles.lead}>
+                                            Answer a few quick questions and we’ll show you whether this property may be within reach, plus what could help or hurt your position.
+                                        </p>
                                     </div>
 
-                                    <div style={grid2}>
-                                        <div>
-                                            <label htmlFor="propertyPrice" style={labelStyle}>
-                                                Property price *
-                                            </label>
-                                            <input
-                                                id="propertyPrice"
-                                                inputMode="decimal"
-                                                autoComplete="off"
-                                                placeholder="e.g. $850 000"
-                                                value={purchase.propertyPrice}
-                                                onChange={(e) => {
-                                                    clearFieldError("propertyPrice");
-                                                    applyMoneyInputChange(e, (v) =>
-                                                        setPurchase((p) => ({
-                                                            ...p,
-                                                            propertyPrice: v,
-                                                        }))
-                                                    );
-                                                }}
-                                                style={inputStyle}
-                                                aria-invalid={Boolean(errors.propertyPrice)}
-                                                aria-describedby={
-                                                    errors.propertyPrice ? "propertyPrice-error" : undefined
-                                                }
-                                            />
-                                            <FieldError id="propertyPrice-error">
-                                                {errors.propertyPrice}
-                                            </FieldError>
-                                        </div>
-
-                                        <div>
-                                            <label htmlFor="deposit" style={labelStyle}>
-                                                Deposit saved *
-                                            </label>
-                                            <input
-                                                id="deposit"
-                                                inputMode="decimal"
-                                                autoComplete="off"
-                                                placeholder="e.g. $130 000"
-                                                value={purchase.deposit}
-                                                onChange={(e) => {
-                                                    clearFieldError("deposit");
-                                                    applyMoneyInputChange(e, (v) =>
-                                                        setPurchase((p) => ({
-                                                            ...p,
-                                                            deposit: v,
-                                                        }))
-                                                    );
-                                                }}
-                                                style={inputStyle}
-                                                aria-invalid={Boolean(errors.deposit)}
-                                                aria-describedby={errors.deposit ? "deposit-error" : undefined}
-                                            />
-                                            <FieldError id="deposit-error">{errors.deposit}</FieldError>
-                                        </div>
+                                    <div className={styles.pathGrid}>
+                                        <GoalPathCard
+                                            selected={goal === "buy_home"}
+                                            icon="🏡"
+                                            title="Buy a Home"
+                                            description="See whether a home at this price may fit your budget."
+                                            onClick={() => {
+                                                clearFieldError("goal");
+                                                setGoal("buy_home");
+                                            }}
+                                        />
+                                        <GoalPathCard
+                                            selected={goal === "first_home"}
+                                            icon="🌱"
+                                            title="Buy My First Home"
+                                            description="Get a quick sense of where you stand as a first-home buyer."
+                                            onClick={() => {
+                                                clearFieldError("goal");
+                                                setGoal("first_home");
+                                            }}
+                                        />
+                                        <GoalPathCard
+                                            selected={goal === "invest"}
+                                            icon="📈"
+                                            title="Invest in Property"
+                                            description="See whether this investment property looks doable based on your numbers."
+                                            onClick={() => {
+                                                clearFieldError("goal");
+                                                setGoal("invest");
+                                            }}
+                                        />
+                                        <GoalPathCard
+                                            selected={goal === "refinance"}
+                                            icon="🔄"
+                                            title="Refinance My Loan"
+                                            description="See whether you may be able to lower your repayments or improve your current loan."
+                                            onClick={() => {
+                                                clearFieldError("goal");
+                                                setGoal("refinance");
+                                            }}
+                                        />
                                     </div>
 
-                                    <div style={{ ...grid2, marginTop: 14 }}>
-                                        <div>
-                                            <label htmlFor="annualIncome" style={labelStyle}>
-                                                Annual income *
-                                            </label>
-                                            <input
-                                                id="annualIncome"
-                                                inputMode="decimal"
-                                                autoComplete="off"
-                                                placeholder="e.g. $120 000"
-                                                value={purchase.annualIncome}
-                                                onChange={(e) => {
-                                                    clearFieldError("annualIncome");
-                                                    applyMoneyInputChange(e, (v) =>
-                                                        setPurchase((p) => ({
-                                                            ...p,
-                                                            annualIncome: v,
-                                                        }))
-                                                    );
-                                                }}
-                                                style={inputStyle}
-                                                aria-invalid={Boolean(errors.annualIncome)}
-                                                aria-describedby={
-                                                    errors.annualIncome ? "annualIncome-error" : undefined
-                                                }
-                                            />
-                                            <FieldError id="annualIncome-error">
-                                                {errors.annualIncome}
-                                            </FieldError>
-                                        </div>
+                                    <FieldError id="goal-error">{errors.goal}</FieldError>
 
-                                        <div>
-                                            <label htmlFor="secondIncome" style={labelStyle}>
-                                                Second income
-                                            </label>
-                                            <input
-                                                id="secondIncome"
-                                                inputMode="decimal"
-                                                autoComplete="off"
-                                                placeholder="Optional"
-                                                value={purchase.secondIncome}
-                                                onChange={(e) => {
-                                                    clearFieldError("secondIncome");
-                                                    applyMoneyInputChange(e, (v) =>
-                                                        setPurchase((p) => ({
-                                                            ...p,
-                                                            secondIncome: v,
-                                                        }))
-                                                    );
-                                                }}
-                                                style={inputStyle}
-                                                aria-invalid={Boolean(errors.secondIncome)}
-                                                aria-describedby={
-                                                    errors.secondIncome ? "secondIncome-error" : "secondIncome-help"
-                                                }
-                                            />
-                                            <div id="secondIncome-help" style={helpStyle}>
-                                                Optional, for joint applications.
-                                            </div>
-                                            <FieldError id="secondIncome-error">
-                                                {errors.secondIncome}
-                                            </FieldError>
-                                        </div>
-                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={handleContinueFromStep1}
+                                        className={styles.btnPrimary}
+                                    >
+                                        Continue →
+                                    </button>
 
-                                    <div style={{ ...grid2, marginTop: 14 }}>
-                                        <div>
-                                            <label htmlFor="monthlyDebts" style={labelStyle}>
-                                                Monthly debts *
-                                            </label>
-                                            <input
-                                                id="monthlyDebts"
-                                                inputMode="decimal"
-                                                autoComplete="off"
-                                                placeholder="e.g. $800"
-                                                value={purchase.monthlyDebts}
-                                                onChange={(e) => {
-                                                    clearFieldError("monthlyDebts");
-                                                    applyMoneyInputChange(e, (v) =>
-                                                        setPurchase((p) => ({
-                                                            ...p,
-                                                            monthlyDebts: v,
-                                                        }))
-                                                    );
-                                                }}
-                                                style={inputStyle}
-                                                aria-invalid={Boolean(errors.monthlyDebts)}
-                                                aria-describedby={
-                                                    errors.monthlyDebts ? "monthlyDebts-error" : "monthlyDebts-help"
-                                                }
-                                            />
-                                            <div id="monthlyDebts-help" style={helpStyle}>
-                                                Car loans, personal loans, cards, etc.
-                                            </div>
-                                            <FieldError id="monthlyDebts-error">
-                                                {errors.monthlyDebts}
-                                            </FieldError>
-                                        </div>
-
-                                        <div>
-                                            <label htmlFor="employmentType" style={labelStyle}>
-                                                Employment type *
-                                            </label>
-                                            <select
-                                                id="employmentType"
-                                                value={purchase.employmentType}
-                                                onChange={(e) => {
-                                                    clearFieldError("employmentType");
-                                                    setPurchase((p) => ({
-                                                        ...p,
-                                                        employmentType: e.target.value as EmploymentType | "",
-                                                    }));
-                                                }}
-                                                style={selectStyle}
-                                                aria-invalid={Boolean(errors.employmentType)}
-                                                aria-describedby={
-                                                    errors.employmentType ? "employmentType-error" : undefined
-                                                }
-                                            >
-                                                <option value="">Choose…</option>
-                                                <option value="full_time">Full-time</option>
-                                                <option value="part_time">Part-time</option>
-                                                <option value="casual">Casual</option>
-                                                <option value="self_employed">Self-employed</option>
-                                                <option value="contractor">Contractor</option>
-                                            </select>
-                                            <FieldError id="employmentType-error">
-                                                {errors.employmentType}
-                                            </FieldError>
-                                        </div>
-                                    </div>
-
-                                    <div style={{ ...grid2, marginTop: 14 }}>
-                                        <div>
-                                            <label htmlFor="purchasePostcode" style={labelStyle}>
-                                                Postcode *
-                                            </label>
-                                            <input
-                                                id="purchasePostcode"
-                                                inputMode="numeric"
-                                                autoComplete="postal-code"
-                                                placeholder="e.g. 2000"
-                                                value={purchase.postcode}
-                                                onChange={(e) => {
-                                                    clearFieldError("postcode");
-                                                    setPurchase((p) => ({
-                                                        ...p,
-                                                        postcode: parseDigits(e.target.value).slice(0, 4),
-                                                    }));
-                                                }}
-                                                style={inputStyle}
-                                                maxLength={4}
-                                                aria-invalid={Boolean(errors.postcode)}
-                                                aria-describedby={errors.postcode ? "purchasePostcode-error" : undefined}
-                                            />
-                                            <FieldError id="purchasePostcode-error">
-                                                {errors.postcode}
-                                            </FieldError>
-                                        </div>
-
-                                        <div>
-                                            <label htmlFor="listingUrl" style={labelStyle}>
-                                                Property link
-                                            </label>
-                                            <input
-                                                id="listingUrl"
-                                                inputMode="url"
-                                                autoComplete="off"
-                                                placeholder="Optional"
-                                                value={purchase.listingUrl}
-                                                onChange={(e) => {
-                                                    clearFieldError("listingUrl");
-                                                    setPurchase((p) => ({
-                                                        ...p,
-                                                        listingUrl: e.target.value,
-                                                    }));
-                                                }}
-                                                style={inputStyle}
-                                                aria-invalid={Boolean(errors.listingUrl)}
-                                                aria-describedby={
-                                                    errors.listingUrl ? "listingUrl-error" : "listingUrl-help"
-                                                }
-                                            />
-                                            <div id="listingUrl-help" style={helpStyle}>
-                                                Optional. Paste a realestate or domain link.
-                                            </div>
-                                            <FieldError id="listingUrl-error">
-                                                {errors.listingUrl}
-                                            </FieldError>
-                                        </div>
-                                    </div>
-                                </>
-                            ) : (
-                                <>
-                                    <div style={grid2}>
-                                        <div>
-                                            <label htmlFor="loanBalance" style={labelStyle}>
-                                                Current loan balance *
-                                            </label>
-                                            <input
-                                                id="loanBalance"
-                                                inputMode="decimal"
-                                                autoComplete="off"
-                                                placeholder="e.g. $540 000"
-                                                value={refi.loanBalance}
-                                                onChange={(e) => {
-                                                    clearFieldError("loanBalance");
-                                                    applyMoneyInputChange(e, (v) =>
-                                                        setRefi((r) => ({
-                                                            ...r,
-                                                            loanBalance: v,
-                                                        }))
-                                                    );
-                                                }}
-                                                style={inputStyle}
-                                                aria-invalid={Boolean(errors.loanBalance)}
-                                                aria-describedby={
-                                                    errors.loanBalance ? "loanBalance-error" : undefined
-                                                }
-                                            />
-                                            <FieldError id="loanBalance-error">
-                                                {errors.loanBalance}
-                                            </FieldError>
-                                        </div>
-
-                                        <div>
-                                            <label htmlFor="interestRate" style={labelStyle}>
-                                                Current interest rate (%) *
-                                            </label>
-                                            <input
-                                                id="interestRate"
-                                                inputMode="decimal"
-                                                autoComplete="off"
-                                                placeholder="e.g. 6.49"
-                                                value={refi.interestRate}
-                                                onChange={(e) => {
-                                                    clearFieldError("interestRate");
-                                                    setRefi((r) => ({
-                                                        ...r,
-                                                        interestRate: e.target.value,
-                                                    }));
-                                                }}
-                                                style={inputStyle}
-                                                aria-invalid={Boolean(errors.interestRate)}
-                                                aria-describedby={
-                                                    errors.interestRate ? "interestRate-error" : undefined
-                                                }
-                                            />
-                                            <FieldError id="interestRate-error">
-                                                {errors.interestRate}
-                                            </FieldError>
-                                        </div>
-                                    </div>
-
-                                    <div style={{ ...grid2, marginTop: 14 }}>
-                                        <div>
-                                            <label htmlFor="loanTermYears" style={labelStyle}>
-                                                Remaining term (years) *
-                                            </label>
-                                            <input
-                                                id="loanTermYears"
-                                                inputMode="numeric"
-                                                autoComplete="off"
-                                                placeholder="e.g. 25"
-                                                value={refi.loanTermYears}
-                                                onChange={(e) => {
-                                                    clearFieldError("loanTermYears");
-                                                    setRefi((r) => ({
-                                                        ...r,
-                                                        loanTermYears: e.target.value,
-                                                    }));
-                                                }}
-                                                style={inputStyle}
-                                                aria-invalid={Boolean(errors.loanTermYears)}
-                                                aria-describedby={
-                                                    errors.loanTermYears ? "loanTermYears-error" : undefined
-                                                }
-                                            />
-                                            <FieldError id="loanTermYears-error">
-                                                {errors.loanTermYears}
-                                            </FieldError>
-                                        </div>
-
-                                        <div>
-                                            <label htmlFor="propertyValue" style={labelStyle}>
-                                                Estimated property value *
-                                            </label>
-                                            <input
-                                                id="propertyValue"
-                                                inputMode="decimal"
-                                                autoComplete="off"
-                                                placeholder="e.g. $820 000"
-                                                value={refi.propertyValue}
-                                                onChange={(e) => {
-                                                    clearFieldError("propertyValue");
-                                                    applyMoneyInputChange(e, (v) =>
-                                                        setRefi((r) => ({
-                                                            ...r,
-                                                            propertyValue: v,
-                                                        }))
-                                                    );
-                                                }}
-                                                style={inputStyle}
-                                                aria-invalid={Boolean(errors.propertyValue)}
-                                                aria-describedby={
-                                                    errors.propertyValue ? "propertyValue-error" : undefined
-                                                }
-                                            />
-                                            <FieldError id="propertyValue-error">
-                                                {errors.propertyValue}
-                                            </FieldError>
-                                        </div>
-                                    </div>
-
-                                    <div style={{ ...grid2, marginTop: 14 }}>
-                                        <div>
-                                            <label htmlFor="currentRepayment" style={labelStyle}>
-                                                Current monthly repayment
-                                            </label>
-                                            <input
-                                                id="currentRepayment"
-                                                inputMode="decimal"
-                                                autoComplete="off"
-                                                placeholder="Optional"
-                                                value={refi.currentRepayment}
-                                                onChange={(e) => {
-                                                    clearFieldError("currentRepayment");
-                                                    applyMoneyInputChange(e, (v) =>
-                                                        setRefi((r) => ({
-                                                            ...r,
-                                                            currentRepayment: v,
-                                                        }))
-                                                    );
-                                                }}
-                                                style={inputStyle}
-                                                aria-invalid={Boolean(errors.currentRepayment)}
-                                                aria-describedby={
-                                                    errors.currentRepayment
-                                                        ? "currentRepayment-error"
-                                                        : "currentRepayment-help"
-                                                }
-                                            />
-                                            <div id="currentRepayment-help" style={helpStyle}>
-                                                Optional. Helps tighten the preview.
-                                            </div>
-                                            <FieldError id="currentRepayment-error">
-                                                {errors.currentRepayment}
-                                            </FieldError>
-                                        </div>
-
-                                        <div>
-                                            <label htmlFor="refiPostcode" style={labelStyle}>
-                                                Postcode *
-                                            </label>
-                                            <input
-                                                id="refiPostcode"
-                                                inputMode="numeric"
-                                                autoComplete="postal-code"
-                                                placeholder="e.g. 2000"
-                                                value={refi.postcode}
-                                                onChange={(e) => {
-                                                    clearFieldError("postcode");
-                                                    setRefi((r) => ({
-                                                        ...r,
-                                                        postcode: parseDigits(e.target.value).slice(0, 4),
-                                                    }));
-                                                }}
-                                                style={inputStyle}
-                                                maxLength={4}
-                                                aria-invalid={Boolean(errors.postcode)}
-                                                aria-describedby={errors.postcode ? "refiPostcode-error" : undefined}
-                                            />
-                                            <FieldError id="refiPostcode-error">
-                                                {errors.postcode}
-                                            </FieldError>
-                                        </div>
-                                    </div>
-                                </>
+                                    <TrustRow />
+                                </div>
                             )}
 
-                            <button
-                                type="button"
-                                onClick={handleContinueFromStep2}
-                                style={buttonPrimary}
-                            >
-                                See My Estimate →
-                            </button>
-                        </div>
-                    )}
+                            {step === 2 && (
+                                <div>
+                                    <BackButton onClick={prevStep} />
 
-                    {step === 3 && previewEstimate && (
-                        <div>
-                            <BackButton onClick={prevStep} />
+                                    <div className={styles.heroCenter}>
+                                        <h2 ref={headingRef} tabIndex={-1} className={styles.h2}>
+                                            {goal === "refinance"
+                                                ? "Tell us about your loan"
+                                                : "A few quick details"}
+                                        </h2>
 
-                            <div
-                                style={{
-                                    display: "inline-flex",
-                                    padding: "7px 12px",
-                                    borderRadius: 999,
-                                    background: "rgba(0,0,0,0.04)",
-                                    fontSize: 12,
-                                    fontWeight: 700,
-                                    marginBottom: 16,
-                                }}
-                            >
-                                Your estimate
-                            </div>
-
-                            <h2
-                                ref={headingRef}
-                                tabIndex={-1}
-                                style={{
-                                    fontSize: "clamp(1.7rem, 3vw, 2.4rem)",
-                                    lineHeight: 1.05,
-                                    letterSpacing: "-0.04em",
-                                    margin: 0,
-                                    outline: "none",
-                                }}
-                            >
-                                {previewEstimate.kind === "purchase"
-                                    ? "Here’s your estimated borrowing snapshot"
-                                    : "Here’s your estimated refinance snapshot"}
-                            </h2>
-
-                            <p
-                                style={{
-                                    marginTop: 12,
-                                    marginBottom: 22,
-                                    fontSize: 15,
-                                    lineHeight: 1.65,
-                                    color: "var(--text-muted, #6b7280)",
-                                }}
-                            >
-                                This is a quick estimate, not lender approval or financial advice. A full
-                                review can be more accurate once a broker checks the finer details.
-                            </p>
-
-                            {previewEstimate.kind === "purchase" ? (
-                                <>
-                                    <div style={grid3}>
-                                        <StatCard
-                                            label="Estimated borrowing range"
-                                            value={fmtRange(
-                                                previewEstimate.borrowingLow,
-                                                previewEstimate.borrowingHigh
-                                            )}
-                                            emphasized
-                                        />
-                                        <StatCard
-                                            label="Estimated total budget"
-                                            value={fmtRange(
-                                                previewEstimate.budgetLow,
-                                                previewEstimate.budgetHigh
-                                            )}
-                                        />
-                                        <StatCard
-                                            label="Estimated monthly repayment"
-                                            value={fmtRange(
-                                                previewEstimate.repaymentLow,
-                                                previewEstimate.repaymentHigh
-                                            )}
-                                        />
+                                        <p className={styles.lead}>
+                                            This only takes a minute. We’ll show your estimate on the next screen.
+                                        </p>
                                     </div>
 
-                                    <div style={{ marginTop: 14 }}>
-                                        <Notice
-                                            tone={
-                                                previewEstimate.position === "within"
-                                                    ? "success"
-                                                    : previewEstimate.position === "close"
-                                                        ? "warning"
-                                                        : "neutral"
-                                            }
-                                        >
-                                            <strong>
-                                                {previewEstimate.position === "within"
-                                                    ? "Likely within range."
-                                                    : previewEstimate.position === "close"
-                                                        ? "Close, but structure may matter."
-                                                        : "Likely short right now."}
-                                            </strong>{" "}
-                                            {previewEstimate.propertyPrice > 0
-                                                ? previewEstimate.position === "within"
-                                                    ? "Based on the numbers entered, the property appears to sit inside your estimated range."
-                                                    : previewEstimate.position === "close"
-                                                        ? "On a better-case view, you may be close enough for a broker to improve the structure."
-                                                        : `On a better-case view, you may still be about ${fmtAUD(
-                                                            previewEstimate.bestCaseShortfall
-                                                        )} short of the target property.`
-                                                : "Add a property price to compare your estimated budget against a target purchase."}
-                                        </Notice>
-                                    </div>
+                                    {goal === "refinance" ? (
+                                        <>
+                                            <div className={styles.grid2}>
+                                                <div>
+                                                    <label htmlFor="loanBalance" className={styles.label}>
+                                                        Current loan balance *
+                                                    </label>
+                                                    <input
+                                                        id="loanBalance"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $540 000"
+                                                        value={refi.loanBalance}
+                                                        onChange={(e) => {
+                                                            clearFieldError("loanBalance");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setRefi((r) => ({
+                                                                    ...r,
+                                                                    loanBalance: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.loanBalance)}
+                                                        aria-describedby={
+                                                            errors.loanBalance ? "loanBalance-error" : undefined
+                                                        }
+                                                    />
+                                                    <FieldError id="loanBalance-error">
+                                                        {errors.loanBalance}
+                                                    </FieldError>
+                                                </div>
 
-                                    <div style={{ marginTop: 16, ...grid3 }}>
-                                        {previewEstimate.insightLines.map((line) => (
-                                            <Notice key={line} tone="neutral">
-                                                {line}
-                                            </Notice>
-                                        ))}
-                                    </div>
-                                </>
-                            ) : (
-                                <>
-                                    <div style={grid3}>
-                                        <StatCard
-                                            label="Current repayment benchmark"
-                                            value={fmtAUD(previewEstimate.currentRepaymentEstimate)}
-                                            emphasized
-                                        />
-                                        <StatCard
-                                            label="Possible repayment range"
-                                            value={fmtRange(
-                                                previewEstimate.improvedRepaymentLow,
-                                                previewEstimate.improvedRepaymentHigh
-                                            )}
-                                        />
-                                        <StatCard
-                                            label="Possible monthly savings"
-                                            value={fmtRange(
-                                                previewEstimate.savingsLow,
-                                                previewEstimate.savingsHigh
-                                            )}
-                                        />
-                                    </div>
+                                                <div>
+                                                    <label htmlFor="propertyValue" className={styles.label}>
+                                                        Estimated property value *
+                                                    </label>
+                                                    <input
+                                                        id="propertyValue"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $820 000"
+                                                        value={refi.propertyValue}
+                                                        onChange={(e) => {
+                                                            clearFieldError("propertyValue");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setRefi((r) => ({
+                                                                    ...r,
+                                                                    propertyValue: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.propertyValue)}
+                                                        aria-describedby={
+                                                            errors.propertyValue ? "propertyValue-error" : undefined
+                                                        }
+                                                    />
+                                                    <FieldError id="propertyValue-error">
+                                                        {errors.propertyValue}
+                                                    </FieldError>
+                                                </div>
+                                            </div>
 
-                                    <div style={{ marginTop: 14 }}>
-                                        <Notice
-                                            tone={
-                                                previewEstimate.position === "strong"
-                                                    ? "success"
-                                                    : previewEstimate.position === "possible"
-                                                        ? "warning"
-                                                        : "neutral"
-                                            }
-                                        >
-                                            <strong>
-                                                {previewEstimate.position === "strong"
-                                                    ? "This looks worth reviewing."
-                                                    : previewEstimate.position === "possible"
-                                                        ? "There may be savings here."
-                                                        : "This may need a deeper review."}
-                                            </strong>{" "}
-                                            {previewEstimate.lvr !== null
-                                                ? `Your estimated LVR is about ${previewEstimate.lvr.toFixed(
-                                                    1
-                                                )}%.`
-                                                : "A broker can usually sharpen this further with your existing statements and loan details."}
-                                        </Notice>
-                                    </div>
+                                            <div className={cx(styles.grid2, styles.stackMd)}>
+                                                <div>
+                                                    <label htmlFor="interestRate" className={styles.label}>
+                                                        Current interest rate (%) *
+                                                    </label>
+                                                    <input
+                                                        id="interestRate"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. 6.49"
+                                                        value={refi.interestRate}
+                                                        onChange={(e) => {
+                                                            clearFieldError("interestRate");
+                                                            setRefi((r) => ({
+                                                                ...r,
+                                                                interestRate: e.target.value,
+                                                            }));
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.interestRate)}
+                                                        aria-describedby={
+                                                            errors.interestRate ? "interestRate-error" : undefined
+                                                        }
+                                                    />
+                                                    <FieldError id="interestRate-error">
+                                                        {errors.interestRate}
+                                                    </FieldError>
+                                                </div>
 
-                                    <div style={{ marginTop: 16, ...grid3 }}>
-                                        {previewEstimate.insightLines.map((line) => (
-                                            <Notice key={line} tone="neutral">
-                                                {line}
-                                            </Notice>
-                                        ))}
-                                    </div>
-                                </>
-                            )}
+                                                <div>
+                                                    <label htmlFor="currentRepayment" className={styles.label}>
+                                                        Current monthly repayment *
+                                                    </label>
+                                                    <input
+                                                        id="currentRepayment"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $3 200"
+                                                        value={refi.currentRepayment}
+                                                        onChange={(e) => {
+                                                            clearFieldError("currentRepayment");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setRefi((r) => ({
+                                                                    ...r,
+                                                                    currentRepayment: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.currentRepayment)}
+                                                        aria-describedby={
+                                                            errors.currentRepayment
+                                                                ? "currentRepayment-error"
+                                                                : undefined
+                                                        }
+                                                    />
+                                                    <FieldError id="currentRepayment-error">
+                                                        {errors.currentRepayment}
+                                                    </FieldError>
+                                                </div>
+                                            </div>
 
-                            <div
-                                style={{
-                                    marginTop: 18,
-                                    border: "1px solid var(--border, rgba(0,0,0,0.12))",
-                                    borderRadius: 24,
-                                    padding: 20,
-                                    position: "relative",
-                                    overflow: "hidden",
-                                    background:
-                                        "linear-gradient(180deg, rgba(255,255,255,0.65) 0%, rgba(255,255,255,0.38) 100%)",
-                                }}
-                            >
-                                <div
-                                    aria-hidden="true"
-                                    style={{
-                                        position: "absolute",
-                                        inset: 0,
-                                        backdropFilter: "blur(6px)",
-                                        background:
-                                            "linear-gradient(to bottom, rgba(255,255,255,0.1), rgba(255,255,255,0.35))",
-                                    }}
-                                />
-                                <div style={{ position: "relative", zIndex: 1 }}>
-                                    <div
-                                        style={{
-                                            display: "inline-flex",
-                                            alignItems: "center",
-                                            gap: 8,
-                                            fontSize: 12,
-                                            fontWeight: 800,
-                                            marginBottom: 10,
-                                        }}
+                                            <div className={cx(styles.grid2, styles.stackMd)}>
+                                                <div>
+                                                    <label htmlFor="refiAnnualIncome" className={styles.label}>
+                                                        Annual household income (before tax) *
+                                                    </label>
+                                                    <input
+                                                        id="refiAnnualIncome"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $150 000"
+                                                        value={refi.annualIncome}
+                                                        onChange={(e) => {
+                                                            clearFieldError("annualIncome");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setRefi((r) => ({
+                                                                    ...r,
+                                                                    annualIncome: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.annualIncome)}
+                                                        aria-describedby={
+                                                            errors.annualIncome ? "refiAnnualIncome-error" : undefined
+                                                        }
+                                                    />
+                                                    <FieldError id="refiAnnualIncome-error">
+                                                        {errors.annualIncome}
+                                                    </FieldError>
+                                                </div>
+
+                                                <div>
+                                                    <label htmlFor="refiMonthlyDebts" className={styles.label}>
+                                                        Monthly debt repayments *
+                                                    </label>
+                                                    <input
+                                                        id="refiMonthlyDebts"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $500"
+                                                        value={refi.monthlyDebts}
+                                                        onChange={(e) => {
+                                                            clearFieldError("monthlyDebts");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setRefi((r) => ({
+                                                                    ...r,
+                                                                    monthlyDebts: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.monthlyDebts)}
+                                                        aria-describedby={
+                                                            errors.monthlyDebts ? "refiMonthlyDebts-error" : undefined
+                                                        }
+                                                    />
+                                                    <FieldError id="refiMonthlyDebts-error">
+                                                        {errors.monthlyDebts}
+                                                    </FieldError>
+                                                </div>
+                                            </div>
+
+                                            <div className={cx(styles.grid2, styles.stackMd)}>
+                                                <div>
+                                                    <label htmlFor="refinanceGoal" className={styles.label}>
+                                                        What is your goal? *
+                                                    </label>
+                                                    <select
+                                                        id="refinanceGoal"
+                                                        value={refi.refinanceGoal}
+                                                        onChange={(e) => {
+                                                            clearFieldError("refinanceGoal");
+                                                            setRefi((r) => ({
+                                                                ...r,
+                                                                refinanceGoal: e.target.value as RefinanceGoal | "",
+                                                            }));
+                                                        }}
+                                                        className={styles.select}
+                                                        aria-invalid={Boolean(errors.refinanceGoal)}
+                                                        aria-describedby={
+                                                            errors.refinanceGoal ? "refinanceGoal-error" : undefined
+                                                        }
+                                                    >
+                                                        <option value="">Choose…</option>
+                                                        <option value="lower_repayments">Lower repayments</option>
+                                                        <option value="better_rate">Better rate</option>
+                                                        <option value="access_equity">Access equity</option>
+                                                        <option value="consolidate_debt">Consolidate debt</option>
+                                                    </select>
+                                                    <FieldError id="refinanceGoal-error">
+                                                        {errors.refinanceGoal}
+                                                    </FieldError>
+                                                </div>
+
+                                                <div>
+                                                    <label htmlFor="refinanceTimeline" className={styles.label}>
+                                                        When are you looking to refinance? *
+                                                    </label>
+                                                    <select
+                                                        id="refinanceTimeline"
+                                                        value={refi.refinanceTimeline}
+                                                        onChange={(e) => {
+                                                            clearFieldError("refinanceTimeline");
+                                                            setRefi((r) => ({
+                                                                ...r,
+                                                                refinanceTimeline: e.target.value as
+                                                                    | RefinanceTimeline
+                                                                    | "",
+                                                            }));
+                                                        }}
+                                                        className={styles.select}
+                                                        aria-invalid={Boolean(errors.refinanceTimeline)}
+                                                        aria-describedby={
+                                                            errors.refinanceTimeline
+                                                                ? "refinanceTimeline-error"
+                                                                : undefined
+                                                        }
+                                                    >
+                                                        <option value="">Choose…</option>
+                                                        <option value="asap">ASAP</option>
+                                                        <option value="1_3">1–3 months</option>
+                                                        <option value="3plus">3+ months</option>
+                                                    </select>
+                                                    <FieldError id="refinanceTimeline-error">
+                                                        {errors.refinanceTimeline}
+                                                    </FieldError>
+                                                </div>
+                                            </div>
+                                        </>
+                                    ) : goal === "invest" ? (
+                                        <>
+                                            <div className={styles.grid2}>
+                                                <div>
+                                                    <label htmlFor="invPropertyPrice" className={styles.label}>
+                                                        What&apos;s the property price? *
+                                                    </label>
+                                                    <input
+                                                        id="invPropertyPrice"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $850 000"
+                                                        value={purchase.propertyPrice}
+                                                        onChange={(e) => {
+                                                            clearFieldError("propertyPrice");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    propertyPrice: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.propertyPrice)}
+                                                        aria-describedby={
+                                                            errors.propertyPrice ? "invPropertyPrice-error" : undefined
+                                                        }
+                                                    />
+                                                    <FieldError id="invPropertyPrice-error">
+                                                        {errors.propertyPrice}
+                                                    </FieldError>
+                                                </div>
+
+                                                <div>
+                                                    <label htmlFor="invDeposit" className={styles.label}>
+                                                        How much deposit do you have available? *
+                                                    </label>
+                                                    <input
+                                                        id="invDeposit"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $130 000"
+                                                        value={purchase.deposit}
+                                                        onChange={(e) => {
+                                                            clearFieldError("deposit");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    deposit: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.deposit)}
+                                                        aria-describedby={errors.deposit ? "invDeposit-error" : undefined}
+                                                    />
+                                                    <FieldError id="invDeposit-error">{errors.deposit}</FieldError>
+                                                </div>
+                                            </div>
+
+                                            <div className={cx(styles.grid2, styles.stackMd)}>
+                                                <div>
+                                                    <label htmlFor="invAnnualIncome" className={styles.label}>
+                                                        What is your annual income (before tax)? *
+                                                    </label>
+                                                    <input
+                                                        id="invAnnualIncome"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $120 000"
+                                                        value={purchase.annualIncome}
+                                                        onChange={(e) => {
+                                                            clearFieldError("annualIncome");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    annualIncome: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.annualIncome)}
+                                                        aria-describedby={
+                                                            errors.annualIncome ? "invAnnualIncome-error" : undefined
+                                                        }
+                                                    />
+                                                    <FieldError id="invAnnualIncome-error">
+                                                        {errors.annualIncome}
+                                                    </FieldError>
+                                                </div>
+
+                                                <div>
+                                                    <div className={styles.groupLabel}>Do you have a second applicant income? *</div>
+                                                    <div className={styles.grid2}>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                clearFieldError("hasSecondApplicant");
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    hasSecondApplicant: false,
+                                                                    secondIncome: "",
+                                                                }));
+                                                            }}
+                                                            className={cx(styles.choiceToggle, purchase.hasSecondApplicant === false && styles.choiceToggleActive)}
+                                                            aria-pressed={purchase.hasSecondApplicant === false}
+                                                        >
+                                                            No
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                clearFieldError("hasSecondApplicant");
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    hasSecondApplicant: true,
+                                                                }));
+                                                            }}
+                                                            className={cx(styles.choiceToggle, purchase.hasSecondApplicant === true && styles.choiceToggleActive)}
+                                                            aria-pressed={purchase.hasSecondApplicant === true}
+                                                        >
+                                                            Yes
+                                                        </button>
+                                                    </div>
+                                                    <FieldError id="hasSecondApplicant-inv-error">
+                                                        {errors.hasSecondApplicant}
+                                                    </FieldError>
+                                                </div>
+                                            </div>
+
+                                            {purchase.hasSecondApplicant === true ? (
+                                                <div className={styles.stackMd}>
+                                                    <label htmlFor="invSecondIncome" className={styles.label}>
+                                                        Second applicant annual income (before tax) *
+                                                    </label>
+                                                    <input
+                                                        id="invSecondIncome"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $80 000"
+                                                        value={purchase.secondIncome}
+                                                        onChange={(e) => {
+                                                            clearFieldError("secondIncome");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    secondIncome: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.secondIncome)}
+                                                        aria-describedby={
+                                                            errors.secondIncome ? "invSecondIncome-error" : undefined
+                                                        }
+                                                    />
+                                                    <FieldError id="invSecondIncome-error">
+                                                        {errors.secondIncome}
+                                                    </FieldError>
+                                                </div>
+                                            ) : null}
+
+                                            <div className={cx(styles.grid2, styles.stackMd)}>
+                                                <div>
+                                                    <label htmlFor="invMonthlyDebts" className={styles.label}>
+                                                        What are your monthly debt repayments? *
+                                                    </label>
+                                                    <input
+                                                        id="invMonthlyDebts"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $800"
+                                                        value={purchase.monthlyDebts}
+                                                        onChange={(e) => {
+                                                            clearFieldError("monthlyDebts");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    monthlyDebts: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.monthlyDebts)}
+                                                        aria-describedby={
+                                                            errors.monthlyDebts
+                                                                ? "invMonthlyDebts-error"
+                                                                : "invMonthlyDebts-help"
+                                                        }
+                                                    />
+                                                    <div id="invMonthlyDebts-help" className={styles.help}>
+                                                        Example: car loans, personal loans, credit cards
+                                                    </div>
+                                                    <FieldError id="invMonthlyDebts-error">
+                                                        {errors.monthlyDebts}
+                                                    </FieldError>
+                                                </div>
+
+                                                <div>
+                                                    <div className={styles.groupLabel}>Do you currently own property? *</div>
+                                                    <div className={styles.grid2}>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                clearFieldError("ownsProperty");
+                                                                setPurchase((p) => ({ ...p, ownsProperty: true }));
+                                                            }}
+                                                            className={cx(styles.choiceToggle, purchase.ownsProperty === true && styles.choiceToggleActive)}
+                                                            aria-pressed={purchase.ownsProperty === true}
+                                                        >
+                                                            Yes
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                clearFieldError("ownsProperty");
+                                                                setPurchase((p) => ({ ...p, ownsProperty: false }));
+                                                            }}
+                                                            className={cx(styles.choiceToggle, purchase.ownsProperty === false && styles.choiceToggleActive)}
+                                                            aria-pressed={purchase.ownsProperty === false}
+                                                        >
+                                                            No
+                                                        </button>
+                                                    </div>
+                                                    <FieldError id="ownsProperty-error">{errors.ownsProperty}</FieldError>
+                                                </div>
+                                            </div>
+
+                                            <div className={cx(styles.grid2, styles.stackMd)}>
+                                                <div>
+                                                    <label htmlFor="weeklyRent" className={styles.label}>
+                                                        Expected weekly rent (optional)
+                                                    </label>
+                                                    <input
+                                                        id="weeklyRent"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $650"
+                                                        value={purchase.weeklyRent}
+                                                        onChange={(e) => {
+                                                            clearFieldError("weeklyRent");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    weeklyRent: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.weeklyRent)}
+                                                        aria-describedby={
+                                                            errors.weeklyRent ? "weeklyRent-error" : "weeklyRent-help"
+                                                        }
+                                                    />
+                                                    <div id="weeklyRent-help" className={styles.help}>
+                                                        Strong signal for investment scenarios if you have it.
+                                                    </div>
+                                                    <FieldError id="weeklyRent-error">{errors.weeklyRent}</FieldError>
+                                                </div>
+
+                                                <div>
+                                                    <label htmlFor="invBuyTimeline" className={styles.label}>
+                                                        When are you planning to buy? *
+                                                    </label>
+                                                    <select
+                                                        id="invBuyTimeline"
+                                                        value={purchase.buyTimeline}
+                                                        onChange={(e) => {
+                                                            clearFieldError("buyTimeline");
+                                                            setPurchase((p) => ({
+                                                                ...p,
+                                                                buyTimeline: e.target.value as BuyTimeline | "",
+                                                            }));
+                                                        }}
+                                                        className={styles.select}
+                                                        aria-invalid={Boolean(errors.buyTimeline)}
+                                                        aria-describedby={
+                                                            errors.buyTimeline ? "invBuyTimeline-error" : undefined
+                                                        }
+                                                    >
+                                                        <option value="">Choose…</option>
+                                                        <option value="asap">ASAP</option>
+                                                        <option value="1_3">1–3 months</option>
+                                                        <option value="3_6">3–6 months</option>
+                                                        <option value="6plus">6+ months</option>
+                                                    </select>
+                                                    <FieldError id="invBuyTimeline-error">
+                                                        {errors.buyTimeline}
+                                                    </FieldError>
+                                                </div>
+                                            </div>
+
+                                            <div className={styles.stackMd}>
+                                                <label htmlFor="invListingUrl" className={styles.label}>
+                                                    Property link (optional)
+                                                </label>
+                                                <input
+                                                    id="invListingUrl"
+                                                    inputMode="url"
+                                                    autoComplete="off"
+                                                    placeholder="Paste the listing if you have it"
+                                                    value={purchase.listingUrl}
+                                                    onChange={(e) => {
+                                                        clearFieldError("listingUrl");
+                                                        setPurchase((p) => ({
+                                                            ...p,
+                                                            listingUrl: e.target.value,
+                                                        }));
+                                                    }}
+                                                    className={styles.input}
+                                                    aria-invalid={Boolean(errors.listingUrl)}
+                                                    aria-describedby={
+                                                        errors.listingUrl ? "invListingUrl-error" : "invListingUrl-help"
+                                                    }
+                                                />
+                                                <div id="invListingUrl-help" className={styles.help}>
+                                                    We won&apos;t scrape it — we may store it for follow-up.
+                                                </div>
+                                                <FieldError id="invListingUrl-error">{errors.listingUrl}</FieldError>
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            {goal === "first_home" ? (
+                                                <div className={styles.mbGroup}>
+                                                    <div className={styles.groupLabel}>Are you a first home buyer? *</div>
+                                                    <div className={styles.grid2}>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                clearFieldError("fhbStatus");
+                                                                setPurchase((p) => ({ ...p, fhbStatus: "yes" }));
+                                                            }}
+                                                            className={cx(
+                                                                styles.choiceToggle,
+                                                                purchase.fhbStatus === "yes" &&
+                                                                styles.choiceToggleActive
+                                                            )}
+                                                            aria-pressed={purchase.fhbStatus === "yes"}
+                                                        >
+                                                            Yes
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                clearFieldError("fhbStatus");
+                                                                setPurchase((p) => ({ ...p, fhbStatus: "unsure" }));
+                                                            }}
+                                                            className={cx(
+                                                                styles.choiceToggle,
+                                                                purchase.fhbStatus === "unsure" &&
+                                                                styles.choiceToggleActive
+                                                            )}
+                                                            aria-pressed={purchase.fhbStatus === "unsure"}
+                                                        >
+                                                            Not sure
+                                                        </button>
+                                                    </div>
+                                                    <FieldError id="fhbStatus-error">{errors.fhbStatus}</FieldError>
+                                                </div>
+                                            ) : null}
+
+                                            <div className={styles.grid2}>
+                                                <div>
+                                                    <label htmlFor="propertyPrice" className={styles.label}>
+                                                        What&apos;s the property price? *
+                                                    </label>
+                                                    <input
+                                                        id="propertyPrice"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $850 000"
+                                                        value={purchase.propertyPrice}
+                                                        onChange={(e) => {
+                                                            clearFieldError("propertyPrice");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    propertyPrice: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.propertyPrice)}
+                                                        aria-describedby={
+                                                            errors.propertyPrice ? "propertyPrice-error" : undefined
+                                                        }
+                                                    />
+                                                    <FieldError id="propertyPrice-error">
+                                                        {errors.propertyPrice}
+                                                    </FieldError>
+                                                </div>
+
+                                                <div>
+                                                    <label htmlFor="deposit" className={styles.label}>
+                                                        How much deposit do you have saved? *
+                                                    </label>
+                                                    <input
+                                                        id="deposit"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $130 000"
+                                                        value={purchase.deposit}
+                                                        onChange={(e) => {
+                                                            clearFieldError("deposit");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    deposit: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.deposit)}
+                                                        aria-describedby={errors.deposit ? "deposit-error" : undefined}
+                                                    />
+                                                    <FieldError id="deposit-error">{errors.deposit}</FieldError>
+                                                </div>
+                                            </div>
+
+                                            <div className={cx(styles.grid2, styles.stackMd)}>
+                                                <div>
+                                                    <label htmlFor="annualIncome" className={styles.label}>
+                                                        What is your annual income (before tax)? *
+                                                    </label>
+                                                    <input
+                                                        id="annualIncome"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $120 000"
+                                                        value={purchase.annualIncome}
+                                                        onChange={(e) => {
+                                                            clearFieldError("annualIncome");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    annualIncome: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.annualIncome)}
+                                                        aria-describedby={
+                                                            errors.annualIncome ? "annualIncome-error" : undefined
+                                                        }
+                                                    />
+                                                    <FieldError id="annualIncome-error">
+                                                        {errors.annualIncome}
+                                                    </FieldError>
+                                                </div>
+
+                                                <div>
+                                                    <div className={styles.groupLabel}>
+                                                        Do you have a second applicant or partner income? *
+                                                    </div>
+                                                    <div className={styles.grid2}>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                clearFieldError("hasSecondApplicant");
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    hasSecondApplicant: false,
+                                                                    secondIncome: "",
+                                                                }));
+                                                            }}
+                                                            className={cx(styles.choiceToggle, purchase.hasSecondApplicant === false && styles.choiceToggleActive)}
+                                                            aria-pressed={purchase.hasSecondApplicant === false}
+                                                        >
+                                                            No
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                clearFieldError("hasSecondApplicant");
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    hasSecondApplicant: true,
+                                                                }));
+                                                            }}
+                                                            className={cx(styles.choiceToggle, purchase.hasSecondApplicant === true && styles.choiceToggleActive)}
+                                                            aria-pressed={purchase.hasSecondApplicant === true}
+                                                        >
+                                                            Yes
+                                                        </button>
+                                                    </div>
+                                                    <FieldError id="hasSecondApplicant-error">
+                                                        {errors.hasSecondApplicant}
+                                                    </FieldError>
+                                                </div>
+                                            </div>
+
+                                            {purchase.hasSecondApplicant === true ? (
+                                                <div className={styles.stackMd}>
+                                                    <label htmlFor="secondIncome" className={styles.label}>
+                                                        Second annual income (before tax) *
+                                                    </label>
+                                                    <input
+                                                        id="secondIncome"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $80 000"
+                                                        value={purchase.secondIncome}
+                                                        onChange={(e) => {
+                                                            clearFieldError("secondIncome");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    secondIncome: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.secondIncome)}
+                                                        aria-describedby={
+                                                            errors.secondIncome ? "secondIncome-error" : undefined
+                                                        }
+                                                    />
+                                                    <FieldError id="secondIncome-error">
+                                                        {errors.secondIncome}
+                                                    </FieldError>
+                                                </div>
+                                            ) : null}
+
+                                            <div className={cx(styles.grid2, styles.stackMd)}>
+                                                <div>
+                                                    <label htmlFor="monthlyDebts" className={styles.label}>
+                                                        What are your monthly debt repayments? *
+                                                    </label>
+                                                    <input
+                                                        id="monthlyDebts"
+                                                        inputMode="decimal"
+                                                        autoComplete="off"
+                                                        placeholder="e.g. $800"
+                                                        value={purchase.monthlyDebts}
+                                                        onChange={(e) => {
+                                                            clearFieldError("monthlyDebts");
+                                                            applyMoneyInputChange(e, (v) =>
+                                                                setPurchase((p) => ({
+                                                                    ...p,
+                                                                    monthlyDebts: v,
+                                                                }))
+                                                            );
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.monthlyDebts)}
+                                                        aria-describedby={
+                                                            errors.monthlyDebts ? "monthlyDebts-error" : "monthlyDebts-help"
+                                                        }
+                                                    />
+                                                    <div id="monthlyDebts-help" className={styles.help}>
+                                                        Example: car loans, personal loans, credit cards
+                                                    </div>
+                                                    <FieldError id="monthlyDebts-error">
+                                                        {errors.monthlyDebts}
+                                                    </FieldError>
+                                                </div>
+
+                                                <div>
+                                                    <label htmlFor="employmentType" className={styles.label}>
+                                                        Employment type *
+                                                    </label>
+                                                    <select
+                                                        id="employmentType"
+                                                        value={purchase.employmentType}
+                                                        onChange={(e) => {
+                                                            clearFieldError("employmentType");
+                                                            setPurchase((p) => ({
+                                                                ...p,
+                                                                employmentType: e.target.value as EmploymentType | "",
+                                                            }));
+                                                        }}
+                                                        className={styles.select}
+                                                        aria-invalid={Boolean(errors.employmentType)}
+                                                        aria-describedby={
+                                                            errors.employmentType ? "employmentType-error" : undefined
+                                                        }
+                                                    >
+                                                        <option value="">Choose…</option>
+                                                        <option value="full_time">Full-time</option>
+                                                        <option value="part_time">Part-time</option>
+                                                        <option value="self_employed">Self-employed</option>
+                                                        <option value="casual_contractor">Casual / contractor</option>
+                                                    </select>
+                                                    <FieldError id="employmentType-error">
+                                                        {errors.employmentType}
+                                                    </FieldError>
+                                                </div>
+                                            </div>
+
+                                            <div className={cx(styles.grid2, styles.stackMd)}>
+                                                <div>
+                                                    <label htmlFor="buyTimeline" className={styles.label}>
+                                                        When are you looking to buy? *
+                                                    </label>
+                                                    <select
+                                                        id="buyTimeline"
+                                                        value={purchase.buyTimeline}
+                                                        onChange={(e) => {
+                                                            clearFieldError("buyTimeline");
+                                                            setPurchase((p) => ({
+                                                                ...p,
+                                                                buyTimeline: e.target.value as BuyTimeline | "",
+                                                            }));
+                                                        }}
+                                                        className={styles.select}
+                                                        aria-invalid={Boolean(errors.buyTimeline)}
+                                                        aria-describedby={
+                                                            errors.buyTimeline ? "buyTimeline-error" : undefined
+                                                        }
+                                                    >
+                                                        <option value="">Choose…</option>
+                                                        <option value="asap">ASAP</option>
+                                                        <option value="1_3">1–3 months</option>
+                                                        <option value="3_6">3–6 months</option>
+                                                        <option value="6plus">6+ months</option>
+                                                    </select>
+                                                    <FieldError id="buyTimeline-error">{errors.buyTimeline}</FieldError>
+                                                </div>
+
+                                                <div>
+                                                    <label htmlFor="listingUrl" className={styles.label}>
+                                                        Property link (optional)
+                                                    </label>
+                                                    <input
+                                                        id="listingUrl"
+                                                        inputMode="url"
+                                                        autoComplete="off"
+                                                        placeholder="Paste the listing if you have it"
+                                                        value={purchase.listingUrl}
+                                                        onChange={(e) => {
+                                                            clearFieldError("listingUrl");
+                                                            setPurchase((p) => ({
+                                                                ...p,
+                                                                listingUrl: e.target.value,
+                                                            }));
+                                                        }}
+                                                        className={styles.input}
+                                                        aria-invalid={Boolean(errors.listingUrl)}
+                                                        aria-describedby={
+                                                            errors.listingUrl ? "listingUrl-error" : "listingUrl-help"
+                                                        }
+                                                    />
+                                                    <div id="listingUrl-help" className={styles.help}>
+                                                        We won&apos;t scrape it — we may store it for follow-up.
+                                                    </div>
+                                                    <FieldError id="listingUrl-error">{errors.listingUrl}</FieldError>
+                                                </div>
+                                            </div>
+                                        </>
+                                    )}
+
+
+                                    <button
+                                        type="button"
+                                        onClick={handleContinueFromStep2}
+                                        className={styles.btnPrimary}
                                     >
-                                        🔒 Detailed summary
-                                    </div>
-
-                                    <h3
-                                        style={{
-                                            margin: 0,
-                                            fontSize: 20,
-                                            lineHeight: 1.15,
-                                            letterSpacing: "-0.03em",
-                                        }}
-                                    >
-                                        Unlock your more detailed next-step summary
-                                    </h3>
-
-                                    <p
-                                        style={{
-                                            marginTop: 10,
-                                            marginBottom: 14,
-                                            fontSize: 14,
-                                            lineHeight: 1.6,
-                                            color: "var(--text-muted, #6b7280)",
-                                            maxWidth: 620,
-                                        }}
-                                    >
-                                        We’ll send a personalised summary with your estimate, likely friction
-                                        points, and the smartest next move based on what you entered.
-                                    </p>
-
-                                    <ul
-                                        style={{
-                                            margin: "0 0 18px 0",
-                                            paddingLeft: 18,
-                                            color: "var(--text, #111827)",
-                                            lineHeight: 1.65,
-                                            fontSize: 14,
-                                        }}
-                                    >
-                                        <li>More detailed scenario notes</li>
-                                        <li>What may improve your position fastest</li>
-                                        <li>Optional broker review if you want it</li>
-                                    </ul>
-
-                                    <button type="button" onClick={nextStep} style={buttonPrimary}>
-                                        Unlock My Detailed Summary →
+                                        See My Estimate →
                                     </button>
                                 </div>
-                            </div>
-                        </div>
-                    )}
+                            )}
 
-                    {step === 4 && (
-                        <div>
-                            <BackButton onClick={prevStep} />
+                            {step === 3 && previewEstimate && (
+                                <div>
+                                    <BackButton onClick={prevStep} />
 
-                            <div
-                                style={{
-                                    display: "inline-flex",
-                                    padding: "7px 12px",
-                                    borderRadius: 999,
-                                    background: "rgba(0,0,0,0.04)",
-                                    fontSize: 12,
-                                    fontWeight: 700,
-                                    marginBottom: 16,
-                                }}
-                            >
-                                Send the summary
-                            </div>
+                                    <div className={styles.heroCenter}>
+                                        <h2 ref={headingRef} tabIndex={-1} className={styles.h2}>
+                                            {previewEstimate.kind === "purchase"
+                                                ? "Your property estimate"
+                                                : "Your refinance estimate"}
+                                        </h2>
 
-                            <h2
-                                ref={headingRef}
-                                tabIndex={-1}
-                                style={{
-                                    fontSize: "clamp(1.7rem, 3vw, 2.4rem)",
-                                    lineHeight: 1.05,
-                                    letterSpacing: "-0.04em",
-                                    margin: 0,
-                                    outline: "none",
-                                }}
-                            >
-                                Where should we send it?
-                            </h2>
-
-                            <p
-                                style={{
-                                    marginTop: 12,
-                                    marginBottom: 22,
-                                    fontSize: 15,
-                                    lineHeight: 1.65,
-                                    color: "var(--text-muted, #6b7280)",
-                                    maxWidth: 680,
-                                }}
-                            >
-                                You’ll receive your detailed summary next. If it looks like a strong fit,
-                                you can choose whether you want a broker to review it.
-                            </p>
-
-                            <form onSubmit={handleSubmit} noValidate>
-                                <input
-                                    tabIndex={-1}
-                                    aria-hidden="true"
-                                    autoComplete="off"
-                                    value={honeypot}
-                                    onChange={(e) => setHoneypot(e.target.value)}
-                                    name="company_website"
-                                    style={{
-                                        position: "absolute",
-                                        opacity: 0,
-                                        pointerEvents: "none",
-                                        width: 1,
-                                        height: 1,
-                                    }}
-                                />
-
-                                <div style={grid2}>
-                                    <div>
-                                        <label htmlFor="fullName" style={labelStyle}>
-                                            Full name *
-                                        </label>
-                                        <input
-                                            id="fullName"
-                                            autoComplete="name"
-                                            placeholder="Alex Smith"
-                                            value={lead.fullName}
-                                            onChange={(e) => {
-                                                clearFieldError("fullName");
-                                                setLead((l) => ({ ...l, fullName: e.target.value }));
-                                            }}
-                                            style={inputStyle}
-                                            aria-invalid={Boolean(errors.fullName)}
-                                            aria-describedby={errors.fullName ? "fullName-error" : undefined}
-                                        />
-                                        <FieldError id="fullName-error">{errors.fullName}</FieldError>
+                                        <p className={styles.lead}>
+                                            This is a guide only, not lender approval or financial advice. Final outcomes depend on a full assessment.
+                                        </p>
                                     </div>
 
-                                    <div>
-                                        <label htmlFor="phone" style={labelStyle}>
-                                            Mobile number *
-                                        </label>
-                                        <input
-                                            id="phone"
-                                            type="tel"
-                                            autoComplete="tel"
-                                            inputMode="tel"
-                                            placeholder="04XX XXX XXX"
-                                            value={lead.phone}
-                                            onChange={(e) => {
-                                                clearFieldError("phone");
-                                                setLead((l) => ({ ...l, phone: e.target.value }));
-                                            }}
-                                            style={inputStyle}
-                                            aria-invalid={Boolean(errors.phone)}
-                                            aria-describedby={errors.phone ? "phone-error" : undefined}
-                                        />
-                                        <FieldError id="phone-error">{errors.phone}</FieldError>
+                                    {previewEstimate.kind === "purchase" ? (
+                                        <>
+                                            <div className={styles.grid3}>
+                                                <StatCard
+                                                    label="Estimated affordability status"
+                                                    value={
+                                                        previewEstimate.affordability === "achievable"
+                                                            ? "Looks achievable"
+                                                            : previewEstimate.affordability === "close"
+                                                                ? "Close, but may need work"
+                                                                : "May be difficult right now"
+                                                    }
+                                                    emphasized
+                                                />
+                                                <StatCard
+                                                    label="Estimated borrowing range"
+                                                    value={fmtRange(
+                                                        previewEstimate.borrowingLow,
+                                                        previewEstimate.borrowingHigh
+                                                    )}
+                                                />
+                                                <StatCard
+                                                    label="Estimated repayments"
+                                                    value={`around ${fmtAUD(previewEstimate.repaymentMid)}/month`}
+                                                    sub={`Range about ${fmtRange(
+                                                        previewEstimate.repaymentLow,
+                                                        previewEstimate.repaymentHigh
+                                                    )} on the borrowing estimate.`}
+                                                />
+                                            </div>
+
+                                            <div className={styles.stackLg}>
+                                                <Notice tone="neutral">
+                                                    <strong>At a glance: </strong>
+                                                    {previewEstimate.teaserLine}
+                                                </Notice>
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            {refinanceMonthlyOverpayMid !== null ? (
+                                                <div className={styles.overpayBanner}>
+                                                    <p className={styles.overpayBannerText}>
+                                                        {refinanceMonthlyOverpayMid > 0 ? (
+                                                            <>
+                                                                You may be overpaying by roughly{" "}
+                                                                <strong>
+                                                                    {fmtAUD(refinanceMonthlyOverpayMid)}
+                                                                </strong>
+                                                                /month
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                From these inputs, a clear monthly savings gap
+                                                                isn&apos;t showing yet — a broker can still compare
+                                                                your rate and fees.
+                                                            </>
+                                                        )}
+                                                    </p>
+                                                    {refinanceMonthlyOverpayMid > 0 ? (
+                                                        <p className={styles.overpayBannerSub}>
+                                                            Figure is the midpoint of the estimated monthly saving
+                                                            range (
+                                                            {fmtRange(
+                                                                previewEstimate.savingsLow,
+                                                                previewEstimate.savingsHigh
+                                                            )}
+                                                            ). General estimate only, not a loan offer.
+                                                        </p>
+                                                    ) : null}
+                                                </div>
+                                            ) : null}
+
+                                            <div className={styles.grid3}>
+                                                <StatCard
+                                                    label="Estimated potential monthly saving range"
+                                                    value={fmtRange(
+                                                        previewEstimate.savingsLow,
+                                                        previewEstimate.savingsHigh
+                                                    )}
+                                                    emphasized
+                                                />
+                                                <StatCard
+                                                    label="Refinancing may be worthwhile?"
+                                                    value={
+                                                        previewEstimate.worthwhile === "likely"
+                                                            ? "Looks worth a closer look"
+                                                            : previewEstimate.worthwhile === "maybe"
+                                                                ? "May be worth comparing"
+                                                                : "Hard to tell without a proper comparison"
+                                                    }
+                                                />
+                                                <StatCard
+                                                    label="Current repayment"
+                                                    value={fmtAUD(previewEstimate.currentRepaymentEstimate)}
+                                                    sub={
+                                                        previewEstimate.lvr !== null
+                                                            ? `Approx. LVR ${previewEstimate.lvr.toFixed(1)}%`
+                                                            : undefined
+                                                    }
+                                                />
+                                            </div>
+
+                                            <div className={styles.stackLg}>
+                                                <Notice tone="neutral">
+                                                    <strong>Teaser: </strong>
+                                                    {previewEstimate.teaserLine}
+                                                </Notice>
+                                            </div>
+                                        </>
+                                    )}
+
+                                    <div className={cx(styles.panel, styles.stackLg)}>
+                                        <div className={styles.panelLock}>Full breakdown</div>
+
+                                        <h3 className={styles.h3}>See your full breakdown</h3>
+
+                                        <p className={styles.panelBlurb}>
+                                            See what’s helping your position, what may be holding you back, and what to do next — shown instantly after you enter your details.
+                                        </p>
+
+                                        <ul className={styles.panelList}>
+                                            <li>What looks positive</li>
+                                            <li>What may need attention</li>
+                                            <li>Simple next steps you can take</li>
+                                        </ul>
+
+                                        <button
+                                            type="button"
+                                            onClick={handleContinueToContact}
+                                            className={styles.btnPrimary}
+                                        >
+                                            See my full breakdown →
+                                        </button>
                                     </div>
                                 </div>
+                            )}
 
-                                <div style={{ marginTop: 14 }}>
-                                    <label htmlFor="email" style={labelStyle}>
-                                        Email address *
-                                    </label>
-                                    <input
-                                        id="email"
-                                        type="email"
-                                        autoComplete="email"
-                                        inputMode="email"
-                                        placeholder="alex@email.com"
-                                        value={lead.email}
-                                        onChange={(e) => {
-                                            clearFieldError("email");
-                                            setLead((l) => ({ ...l, email: e.target.value }));
-                                        }}
-                                        style={inputStyle}
-                                        aria-invalid={Boolean(errors.email)}
-                                        aria-describedby={errors.email ? "email-error" : undefined}
-                                    />
-                                    <FieldError id="email-error">{errors.email}</FieldError>
-                                </div>
+                            {step === 4 && (
+                                <div>
+                                    <BackButton onClick={prevStep} />
 
-                                <TurnstileWidget
-                                    siteKey={TURNSTILE_SITE_KEY}
-                                    onToken={handleTurnstileToken}
-                                    onExpired={handleTurnstileExpired}
-                                />
+                                    <div className={styles.heroCenter}>
+                                        <h2 ref={headingRef} tabIndex={-1} className={styles.h2}>
+                                            See your full breakdown
+                                        </h2>
 
-                                <FieldError id="turnstile-error">{errors.turnstile}</FieldError>
-
-                                <button
-                                    type="submit"
-                                    disabled={submitStatus.type === "loading"}
-                                    style={{
-                                        ...buttonPrimary,
-                                        opacity: submitStatus.type === "loading" ? 0.75 : 1,
-                                        marginTop: 16,
-                                    }}
-                                >
-                                    {submitStatus.type === "loading"
-                                        ? "Sending…"
-                                        : "Send My Detailed Summary →"}
-                                </button>
-
-                                {submitStatus.type === "error" ? (
-                                    <div
-                                        role="alert"
-                                        style={{
-                                            marginTop: 12,
-                                            fontSize: 12,
-                                            color: "#b91c1c",
-                                            fontWeight: 600,
-                                        }}
-                                    >
-                                        {submitStatus.message}
+                                        <p className={styles.lead}>
+                                            Enter your details to see the full breakdown on this page. You may also receive a short summary by SMS or email.
+                                        </p>
                                     </div>
-                                ) : null}
 
-                                <p
-                                    style={{
-                                        marginTop: 14,
-                                        marginBottom: 0,
-                                        fontSize: 12,
-                                        lineHeight: 1.6,
-                                        color: "var(--text-muted, #6b7280)",
-                                    }}
-                                >
-                                    By submitting, you agree to be contacted about your enquiry. This is an
-                                    estimate only and not financial advice.
-                                </p>
-                            </form>
-                        </div>
-                    )}
+                                    <form onSubmit={handleSubmit} noValidate>
+                                        <input
+                                            tabIndex={-1}
+                                            aria-hidden="true"
+                                            autoComplete="new-password"
+                                            value={honeypot}
+                                            onChange={(e) => setHoneypot(e.target.value)}
+                                            name="company_website"
+                                            className={styles.honeypot}
+                                        />
 
-                    {step === 5 && (
-                        <div
-                            style={{
-                                textAlign: "center",
-                                padding: "18px 0 4px",
-                            }}
-                        >
-                            <div
-                                style={{
-                                    width: 74,
-                                    height: 74,
-                                    borderRadius: 999,
-                                    display: "grid",
-                                    placeItems: "center",
-                                    margin: "0 auto 16px",
-                                    fontSize: 28,
-                                    fontWeight: 900,
-                                    background: "rgba(16,185,129,0.12)",
-                                    color: "#059669",
-                                }}
-                            >
-                                ✓
-                            </div>
+                                        <div className={styles.grid2}>
+                                            <div>
+                                                <label htmlFor="fullName" className={styles.label}>
+                                                    Full name *
+                                                </label>
+                                                <input
+                                                    id="fullName"
+                                                    autoComplete="name"
+                                                    placeholder="Alex Smith"
+                                                    value={lead.fullName}
+                                                    onChange={(e) => {
+                                                        clearFieldError("fullName");
+                                                        setLead((l) => ({ ...l, fullName: e.target.value }));
+                                                    }}
+                                                    className={styles.input}
+                                                    aria-invalid={Boolean(errors.fullName)}
+                                                    aria-describedby={errors.fullName ? "fullName-error" : undefined}
+                                                />
+                                                <FieldError id="fullName-error">{errors.fullName}</FieldError>
+                                            </div>
 
-                            <div
-                                style={{
-                                    display: "inline-flex",
-                                    padding: "7px 12px",
-                                    borderRadius: 999,
-                                    background: "rgba(0,0,0,0.04)",
-                                    fontSize: 12,
-                                    fontWeight: 700,
-                                    marginBottom: 14,
-                                }}
-                            >
-                                All set
-                            </div>
+                                            <div>
+                                                <label htmlFor="phone" className={styles.label}>
+                                                    Mobile number *
+                                                </label>
+                                                <input
+                                                    id="phone"
+                                                    type="tel"
+                                                    autoComplete="tel"
+                                                    inputMode="tel"
+                                                    placeholder="04XX XXX XXX"
+                                                    value={lead.phone}
+                                                    onChange={(e) => {
+                                                        clearFieldError("phone");
+                                                        setLead((l) => ({ ...l, phone: e.target.value }));
+                                                    }}
+                                                    className={styles.input}
+                                                    aria-invalid={Boolean(errors.phone)}
+                                                    aria-describedby={errors.phone ? "phone-error" : undefined}
+                                                />
+                                                <FieldError id="phone-error">{errors.phone}</FieldError>
+                                            </div>
+                                        </div>
 
-                            <h2
-                                ref={headingRef}
-                                tabIndex={-1}
-                                style={{
-                                    fontSize: "clamp(1.9rem, 4vw, 2.8rem)",
-                                    lineHeight: 1.03,
-                                    letterSpacing: "-0.04em",
-                                    margin: 0,
-                                    outline: "none",
-                                }}
-                            >
-                                Your summary is on the way
-                                {lead.fullName ? `, ${lead.fullName.split(" ")[0]}` : ""}.
-                            </h2>
+                                        <div className={styles.stackMd}>
+                                            <label htmlFor="email" className={styles.label}>
+                                                Email address *
+                                            </label>
+                                            <input
+                                                id="email"
+                                                type="email"
+                                                autoComplete="email"
+                                                inputMode="email"
+                                                placeholder="alex@email.com"
+                                                value={lead.email}
+                                                onChange={(e) => {
+                                                    clearFieldError("email");
+                                                    setLead((l) => ({ ...l, email: e.target.value }));
+                                                }}
+                                                className={styles.input}
+                                                aria-invalid={Boolean(errors.email)}
+                                                aria-describedby={errors.email ? "email-error" : undefined}
+                                            />
+                                            <FieldError id="email-error">{errors.email}</FieldError>
+                                        </div>
 
-                            <p
-                                style={{
-                                    marginTop: 14,
-                                    marginBottom: 24,
-                                    fontSize: 16,
-                                    lineHeight: 1.65,
-                                    color: "var(--text-muted, #6b7280)",
-                                    maxWidth: 650,
-                                    marginInline: "auto",
-                                }}
-                            >
-                                We’ve received your details. The next message should include your summary
-                                and the clearest next step based on what you entered.
-                            </p>
+                                        <TurnstileWidget
+                                            siteKey={TURNSTILE_SITE_KEY}
+                                            onToken={handleTurnstileToken}
+                                            onExpired={handleTurnstileExpired}
+                                        />
 
-                            <div
-                                style={{
-                                    maxWidth: 720,
-                                    margin: "0 auto",
-                                    display: "grid",
-                                    gap: 14,
-                                    gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-                                }}
-                            >
-                                <Notice tone="neutral">Personalised estimate summary</Notice>
-                                <Notice tone="neutral">Clear next-step guidance</Notice>
-                                <Notice tone="neutral">Optional broker review if you want it</Notice>
-                            </div>
-                        </div>
+                                        <FieldError id="turnstile-error">{errors.turnstile}</FieldError>
+
+                                        <label className={styles.checkLabel}>
+                                            <input
+                                                type="checkbox"
+                                                checked={consentAccepted}
+                                                onChange={(e) => {
+                                                    clearFieldError("consent");
+                                                    setConsentAccepted(e.target.checked);
+                                                }}
+                                            />
+                                            <span>
+                                                I’m happy to be contacted by {BROKER_NAME} by SMS, phone, or email about this enquiry. I understand this is a guide only and not financial advice.
+                                            </span>
+                                        </label>
+                                        <FieldError id="consent-error">{errors.consent}</FieldError>
+
+                                        <button
+                                            type="submit"
+                                            disabled={submitStatus.type === "loading"}
+                                            className={cx(styles.btnPrimary, styles.stackLg)}
+                                        >
+                                            {submitStatus.type === "loading"
+                                                ? "Submitting…"
+                                                : "Show my full breakdown →"}
+                                        </button>
+
+                                        {submitStatus.type === "error" ? (
+                                            <div role="alert" className={styles.alertError}>
+                                                {submitStatus.message}
+                                            </div>
+                                        ) : null}
+
+                                        <p className={styles.consentFoot}>
+                                            By submitting, you agree to be contacted by {BROKER_NAME} by SMS, phone, or email about this enquiry. This is a guide only and not financial advice.
+                                        </p>
+                                    </form>
+                                </div>
+                            )}
+
+                            {step === 5 && resultBundle && (
+                                <div className={styles.resultWrap}>
+                                    <div className={styles.heroCenter}>
+                                        <h2 ref={headingRef} tabIndex={-1} className={styles.resultHeadline}>
+                                            {resultBundle.full.headline}
+                                        </h2>
+
+                                        <p className={styles.resultIntro}>
+                                            Thanks{", "}
+                                            {resultBundle.lead.fullName.split(" ")[0] || "there"} — here&apos;s your
+                                            on-page summary. {BROKER_NAME} may also follow up by SMS and email.
+                                        </p>
+                                    </div>
+
+                                    {resultBundle.estimate?.kind === "purchase" ? (
+                                        <div className={cx(styles.grid3, styles.mbSection)}>
+                                            <StatCard
+                                                label="Property price"
+                                                value={fmtAUD(resultBundle.estimate.propertyPrice)}
+                                            />
+                                            <StatCard
+                                                label="Deposit entered"
+                                                value={fmtAUD(resultBundle.estimate.deposit)}
+                                            />
+                                            <StatCard
+                                                label="Estimated borrowing range"
+                                                value={fmtRange(
+                                                    resultBundle.estimate.borrowingLow,
+                                                    resultBundle.estimate.borrowingHigh
+                                                )}
+                                            />
+                                            <StatCard
+                                                label="Estimated repayments"
+                                                value={`around ${fmtAUD(resultBundle.estimate.repaymentMid)}/month`}
+                                                sub={fmtRange(
+                                                    resultBundle.estimate.repaymentLow,
+                                                    resultBundle.estimate.repaymentHigh
+                                                )}
+                                            />
+                                            <StatCard
+                                                label="Affordability (headline)"
+                                                value={
+                                                    resultBundle.estimate.affordability === "achievable"
+                                                        ? "Looks achievable"
+                                                        : resultBundle.estimate.affordability === "close"
+                                                            ? "Close, but a few things may need work"
+                                                            : "May be difficult right now"
+                                                }
+                                            />
+                                        </div>
+                                    ) : resultBundle.estimate?.kind === "refinance" ? (
+                                        <div className={cx(styles.grid3, styles.mbSection)}>
+                                            <StatCard
+                                                label="Current loan balance"
+                                                value={fmtAUD(resultBundle.refiLoanBalance ?? 0)}
+                                            />
+                                            <StatCard
+                                                label="Estimated LVR"
+                                                value={
+                                                    resultBundle.estimate.lvr !== null
+                                                        ? `${resultBundle.estimate.lvr.toFixed(1)}%`
+                                                        : "—"
+                                                }
+                                            />
+                                            <StatCard
+                                                label="Current repayment"
+                                                value={fmtAUD(resultBundle.estimate.currentRepaymentEstimate)}
+                                            />
+                                            <StatCard
+                                                label="Possible repayment range"
+                                                value={fmtRange(
+                                                    resultBundle.estimate.improvedRepaymentLow,
+                                                    resultBundle.estimate.improvedRepaymentHigh
+                                                )}
+                                            />
+                                            <StatCard
+                                                label="Potential monthly savings (range)"
+                                                value={fmtRange(
+                                                    resultBundle.estimate.savingsLow,
+                                                    resultBundle.estimate.savingsHigh
+                                                )}
+                                            />
+                                        </div>
+                                    ) : null}
+
+                                    <h3 className={styles.sectionHeading}>Strengths</h3>
+                                    <ul className={styles.list}>
+                                        {resultBundle.full.strengths.map((s) => (
+                                            <li key={s}>{s}</li>
+                                        ))}
+                                    </ul>
+
+                                    <h3 className={styles.sectionHeading}>Watchouts</h3>
+                                    <ul className={styles.list}>
+                                        {resultBundle.full.watchouts.map((s) => (
+                                            <li key={s}>{s}</li>
+                                        ))}
+                                    </ul>
+
+                                    <h3 className={styles.sectionHeading}>What to do next</h3>
+                                    <ul className={styles.list}>
+                                        {resultBundle.full.nextSteps.map((s) => (
+                                            <li key={s}>{s}</li>
+                                        ))}
+                                    </ul>
+
+                                    <div className={styles.ctaBox}>
+                                        <div className={styles.ctaTitle}>
+                                            Want a broker to review this properly?
+                                        </div>
+                                        <div className={styles.grid2}>
+                                            <a
+                                                href={BOOKING_URL}
+                                                className={cx(styles.btnPrimary, styles.btnLink)}
+                                            >
+                                                Book a call
+                                            </a>
+                                            <a
+                                                href={BOOKING_URL}
+                                                className={cx(styles.btnGhost, styles.btnLink)}
+                                            >
+                                                Request a callback today
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </>
                     )}
                 </div>
             </div>
